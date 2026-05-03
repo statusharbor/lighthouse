@@ -1,0 +1,19 @@
+# Binaries
+/lighthouse
+/dist/
+*.exe
+
+# Go
+*.test
+*.out
+coverage.txt
+
+# Local config / runtime data
+lighthouse.yaml
+/var/
+/data/
+
+# Editor
+.idea/
+.vscode/
+.DS_Store
