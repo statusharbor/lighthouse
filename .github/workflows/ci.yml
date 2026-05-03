@@ -40,7 +40,7 @@ jobs:
         run: go build -o /dev/null ./cmd/lighthouse
 
   test:
-    name: Test (with race detector)
+    name: Test
     if: "!startsWith(github.event.head_commit.message, 'chore(release):')"
     runs-on: ubuntu-latest
     timeout-minutes: 10
