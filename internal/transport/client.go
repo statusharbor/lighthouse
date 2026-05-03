@@ -43,35 +43,76 @@ func NewClient(baseURL, token string) *Client {
 // Returns ErrLighthouseGone on 410 so the caller can exit(0) cleanly
 // instead of treating it as an auth failure.
 func (c *Client) Register(ctx context.Context, req RegisterRequest) (*RegisterResponse, error) {
-	body, err := json.Marshal(req)
-	if err != nil {
-		return nil, fmt.Errorf("marshal request: %w", err)
+	var out RegisterResponse
+	if err := c.postJSON(ctx, "/api/lighthouse/v1/register", req, &out, http.StatusOK); err != nil {
+		return nil, err
 	}
-	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost,
-		c.baseURL+"/api/lighthouse/v1/register", bytes.NewReader(body))
+	return &out, nil
+}
+
+// SendEvents posts a batch of state transitions (initial-sync dump or
+// otherwise). The Console is allowed to dedup, so the response's
+// `received` count may be less than len(req.Events).
+func (c *Client) SendEvents(ctx context.Context, req EventsRequest) (*EventsResponse, error) {
+	var out EventsResponse
+	if err := c.postJSON(ctx, "/api/lighthouse/v1/events", req, &out, http.StatusAccepted); err != nil {
+		return nil, err
+	}
+	return &out, nil
+}
+
+// Heartbeat posts liveness + an optional latency rollup. The Console may
+// echo a fresh check set (via Checks) when the etag changed. Per design
+// §4.2 there is **no retry** at this layer — a failed heartbeat is dropped
+// and the next 15s tick is the retry.
+func (c *Client) Heartbeat(ctx context.Context, req HeartbeatRequest) (*HeartbeatResponse, error) {
+	var out HeartbeatResponse
+	if err := c.postJSON(ctx, "/api/lighthouse/v1/heartbeat", req, &out, http.StatusOK); err != nil {
+		return nil, err
+	}
+	return &out, nil
+}
+
+// Shutdown notifies the Console that the agent is exiting cleanly so the
+// offline watchdog skips it during the 60s grace window. Best-effort —
+// caller does not retry. Returns ErrLighthouseGone on 410 like the others.
+func (c *Client) Shutdown(ctx context.Context, req ShutdownRequest) error {
+	return c.postJSON(ctx, "/api/lighthouse/v1/shutdown", req, nil, http.StatusNoContent)
+}
+
+// postJSON is the shared transport core: marshal, POST with Bearer auth,
+// branch on status (410 → ErrLighthouseGone, expectedStatus → decode,
+// other → error with body for diagnostics).
+func (c *Client) postJSON(ctx context.Context, path string, in any, out any, expectedStatus int) error {
+	body, err := json.Marshal(in)
 	if err != nil {
-		return nil, fmt.Errorf("build request: %w", err)
+		return fmt.Errorf("marshal request: %w", err)
+	}
+	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, c.baseURL+path, bytes.NewReader(body))
+	if err != nil {
+		return fmt.Errorf("build request: %w", err)
 	}
 	httpReq.Header.Set("Authorization", "Bearer "+c.token)
 	httpReq.Header.Set("Content-Type", "application/json")
 
 	resp, err := c.httpc.Do(httpReq)
 	if err != nil {
-		return nil, fmt.Errorf("post register: %w", err)
+		return fmt.Errorf("post %s: %w", path, err)
 	}
 	defer func() { _ = resp.Body.Close() }()
 
-	switch resp.StatusCode {
-	case http.StatusOK:
-		var out RegisterResponse
-		if err := json.NewDecoder(resp.Body).Decode(&out); err != nil {
-			return nil, fmt.Errorf("decode register response: %w", err)
-		}
-		return &out, nil
-	case http.StatusGone:
-		return nil, ErrLighthouseGone
-	default:
-		body, _ := io.ReadAll(resp.Body)
-		return nil, fmt.Errorf("register: HTTP %d: %s", resp.StatusCode, string(body))
+	if resp.StatusCode == http.StatusGone {
+		return ErrLighthouseGone
 	}
+	if resp.StatusCode != expectedStatus {
+		body, _ := io.ReadAll(resp.Body)
+		return fmt.Errorf("%s: HTTP %d: %s", path, resp.StatusCode, string(body))
+	}
+	if out == nil {
+		return nil
+	}
+	if err := json.NewDecoder(resp.Body).Decode(out); err != nil {
+		return fmt.Errorf("decode %s response: %w", path, err)
+	}
+	return nil
 }

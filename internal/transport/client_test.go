@@ -100,3 +100,151 @@ func TestRegister_NetworkErrorPropagates(t *testing.T) {
 		t.Fatal("expected network error")
 	}
 }
+
+func TestSendEvents_HappyPath(t *testing.T) {
+	srv := newMockServer(t, func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/api/lighthouse/v1/events" {
+			t.Errorf("unexpected path: %s", r.URL.Path)
+		}
+		var got EventsRequest
+		if err := json.NewDecoder(r.Body).Decode(&got); err != nil {
+			t.Fatalf("decode: %v", err)
+		}
+		if !got.IsInitialSync {
+			t.Error("expected IsInitialSync=true")
+		}
+		if len(got.Events) != 2 {
+			t.Errorf("len(events) = %d, want 2", len(got.Events))
+		}
+		// Initial-sync rows must have nil prev_state per Interpretation B.
+		for i, ev := range got.Events {
+			if ev.PrevState != nil {
+				t.Errorf("event[%d].PrevState = %v, want nil for initial sync", i, *ev.PrevState)
+			}
+		}
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusAccepted)
+		_ = json.NewEncoder(w).Encode(EventsResponse{Received: 2})
+	})
+
+	c := NewClient(srv.URL, "lh_test")
+	resp, err := c.SendEvents(context.Background(), EventsRequest{
+		IsInitialSync: true,
+		Events: []EventInput{
+			{CheckID: "c1", NewState: "up"},
+			{CheckID: "c2", NewState: "down"},
+		},
+	})
+	if err != nil {
+		t.Fatalf("SendEvents: %v", err)
+	}
+	if resp.Received != 2 {
+		t.Errorf("Received = %d, want 2", resp.Received)
+	}
+}
+
+func TestSendEvents_410ReturnsErrLighthouseGone(t *testing.T) {
+	srv := newMockServer(t, func(w http.ResponseWriter, r *http.Request) {
+		http.Error(w, `{"error":"deleted"}`, http.StatusGone)
+	})
+
+	c := NewClient(srv.URL, "lh_test")
+	_, err := c.SendEvents(context.Background(), EventsRequest{Events: []EventInput{{CheckID: "x", NewState: "up"}}})
+	if !errors.Is(err, ErrLighthouseGone) {
+		t.Errorf("expected ErrLighthouseGone, got %v", err)
+	}
+}
+
+func TestSendEvents_400IsNotErrLighthouseGone(t *testing.T) {
+	srv := newMockServer(t, func(w http.ResponseWriter, r *http.Request) {
+		http.Error(w, `{"error":"cross-tenant check_id"}`, http.StatusBadRequest)
+	})
+	c := NewClient(srv.URL, "lh_test")
+	_, err := c.SendEvents(context.Background(), EventsRequest{Events: []EventInput{{CheckID: "x", NewState: "up"}}})
+	if err == nil {
+		t.Fatal("expected error on 400")
+	}
+	if errors.Is(err, ErrLighthouseGone) {
+		t.Error("400 must NOT map to ErrLighthouseGone")
+	}
+}
+
+func TestHeartbeat_HappyPath_SendsLatenciesAndEtag(t *testing.T) {
+	srv := newMockServer(t, func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/api/lighthouse/v1/heartbeat" {
+			t.Errorf("unexpected path: %s", r.URL.Path)
+		}
+		var got HeartbeatRequest
+		if err := json.NewDecoder(r.Body).Decode(&got); err != nil {
+			t.Fatal(err)
+		}
+		if got.ConfigEtag != "abc123" {
+			t.Errorf("ConfigEtag = %q", got.ConfigEtag)
+		}
+		if got.CheckLatencies["c1"].LastObservedLatencyMs != 42 {
+			t.Errorf("CheckLatencies[c1] = %+v", got.CheckLatencies["c1"])
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(HeartbeatResponse{
+			ConfigEtag:              "abc123",
+			Paused:                  false,
+			FlapProtectionThreshold: 1,
+		})
+	})
+
+	c := NewClient(srv.URL, "lh_test")
+	resp, err := c.Heartbeat(context.Background(), HeartbeatRequest{
+		AgentVersion: "0.1.0",
+		ConfigEtag:   "abc123",
+		CheckLatencies: map[string]LatencyEntry{
+			"c1": {LastObservedLatencyMs: 42},
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if resp.ConfigEtag != "abc123" {
+		t.Errorf("ConfigEtag = %q", resp.ConfigEtag)
+	}
+}
+
+func TestHeartbeat_410ReturnsErrLighthouseGone(t *testing.T) {
+	srv := newMockServer(t, func(w http.ResponseWriter, r *http.Request) {
+		http.Error(w, `{"error":"deleted"}`, http.StatusGone)
+	})
+	c := NewClient(srv.URL, "lh_test")
+	_, err := c.Heartbeat(context.Background(), HeartbeatRequest{})
+	if !errors.Is(err, ErrLighthouseGone) {
+		t.Errorf("expected ErrLighthouseGone, got %v", err)
+	}
+}
+
+func TestShutdown_HappyPathPostsReason(t *testing.T) {
+	var got ShutdownRequest
+	srv := newMockServer(t, func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/api/lighthouse/v1/shutdown" {
+			t.Errorf("unexpected path: %s", r.URL.Path)
+		}
+		_ = json.NewDecoder(r.Body).Decode(&got)
+		w.WriteHeader(http.StatusNoContent)
+	})
+
+	c := NewClient(srv.URL, "lh_test")
+	if err := c.Shutdown(context.Background(), ShutdownRequest{Reason: "sigterm"}); err != nil {
+		t.Fatal(err)
+	}
+	if got.Reason != "sigterm" {
+		t.Errorf("Reason = %q", got.Reason)
+	}
+}
+
+func TestShutdown_410ReturnsErrLighthouseGone(t *testing.T) {
+	srv := newMockServer(t, func(w http.ResponseWriter, r *http.Request) {
+		http.Error(w, `{"error":"deleted"}`, http.StatusGone)
+	})
+	c := NewClient(srv.URL, "lh_test")
+	err := c.Shutdown(context.Background(), ShutdownRequest{Reason: "sigterm"})
+	if !errors.Is(err, ErrLighthouseGone) {
+		t.Errorf("expected ErrLighthouseGone, got %v", err)
+	}
+}
