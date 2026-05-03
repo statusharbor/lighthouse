@@ -14,7 +14,7 @@ before:
 builds:
   - id: lighthouse
     main: ./cmd/lighthouse
-    binary: lighthouse_{{ .Os }}_{{ .Arch }}
+    binary: lighthouse_{{ .Os }}_{{ .Arch }}{{ if .Arm }}v{{ .Arm }}{{ end }}
     no_unique_dist_dir: true # produce flat dist/ for easier release uploads
     env:
       - CGO_ENABLED=0
@@ -27,18 +27,69 @@ builds:
       - linux
       - darwin
       - windows
+      - freebsd
     goarch:
       - amd64
       - arm64
+      - "386"
+      - arm
+      - riscv64
+    goarm:
+      - "6"
+      - "7"
+    ignore:
+      # darwin: only amd64 + arm64 supported by modern Go.
+      - { goos: darwin, goarch: "386" }
+      - { goos: darwin, goarch: arm }
+      - { goos: darwin, goarch: riscv64 }
+      # windows: 32-bit arm dropped; riscv64 not supported.
+      - { goos: windows, goarch: arm }
+      - { goos: windows, goarch: riscv64 }
     # Windows binaries get a .exe suffix automatically via goreleaser when
     # GOOS=windows. The binary template above expands to e.g.
     # `lighthouse_windows_amd64.exe`.
 
+  # Linux-only build that produces a plain `lighthouse` binary for nfpm
+  # so the .deb installs at /usr/bin/lighthouse (not /usr/bin/lighthouse_linux_amd64).
+  - id: lighthouse-pkg
+    main: ./cmd/lighthouse
+    binary: lighthouse
+    env:
+      - CGO_ENABLED=0
+    flags:
+      - -trimpath
+    ldflags:
+      - -s -w
+      - -X github.com/statusharbor/lighthouse/internal/agent.AgentVersion={{ .Version }}
+    goos: [linux]
+    goarch: [amd64, arm64, "386", arm]
+    goarm: ["6", "7"]
+
 archives:
   # Skip archives — we ship raw binaries the install.sh can fetch directly.
   - id: raw
-    format: binary
+    formats: [binary]
+    ids: [lighthouse]
     name_template: "{{ .Binary }}"
+
+nfpms:
+  - id: lighthouse-pkgs
+    package_name: lighthouse
+    ids: [lighthouse-pkg]
+    formats: [deb, apk]
+    file_name_template: "lighthouse_{{ .Version }}_{{ .Arch }}{{ if .Arm }}v{{ .Arm }}{{ end }}"
+    maintainer: Status Harbor <ops@statusharbor.com>
+    description: |
+      Status Harbor Lighthouse — private network monitoring agent.
+      Single static binary that runs inside your private network and
+      reports check results to the Status Harbor Console over outbound
+      HTTPS only.
+    vendor: Status Harbor
+    homepage: https://statusharbor.com
+    license: Apache-2.0
+    bindir: /usr/bin
+    section: net
+    priority: optional
 
 checksum:
   name_template: "checksums.txt"
