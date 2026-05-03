@@ -1,0 +1,94 @@
+# goreleaser config for Status Harbor Lighthouse.
+# Triggered by .github/workflows/release.yml on tag push (v*).
+#
+# Per design doc §12.3: signed binaries (cosign keyless), SBOM (syft, SPDX),
+# SHA256 checksums.
+version: 2
+
+project_name: lighthouse
+
+before:
+  hooks:
+    - go mod tidy
+
+builds:
+  - id: lighthouse
+    main: ./cmd/lighthouse
+    binary: lighthouse_{{ .Os }}_{{ .Arch }}
+    no_unique_dist_dir: true # produce flat dist/ for easier release uploads
+    env:
+      - CGO_ENABLED=0
+    flags:
+      - -trimpath
+    ldflags:
+      - -s -w
+      - -X github.com/statusharbor/lighthouse/internal/agent.AgentVersion={{ .Version }}
+    goos:
+      - linux
+      - darwin
+    goarch:
+      - amd64
+      - arm64
+
+archives:
+  # Skip archives — we ship raw binaries the install.sh can fetch directly.
+  - id: raw
+    format: binary
+    name_template: "{{ .Binary }}"
+
+checksum:
+  name_template: "checksums.txt"
+  algorithm: sha256
+
+# SBOM in SPDX JSON, one per binary.
+sboms:
+  - id: lighthouse-sbom
+    artifacts: binary
+    documents:
+      - "{{ .ArtifactName }}.spdx.json"
+    cmd: syft
+    args: ["$artifact", "--output", "spdx-json=$document"]
+
+# Cosign keyless signing (Sigstore). The keyless flow uses the GitHub
+# Actions OIDC token; no private key is stored anywhere.
+signs:
+  - id: cosign-binary
+    artifacts: binary
+    cmd: cosign
+    args:
+      - sign-blob
+      - "--yes"
+      - "--output-certificate=${artifact}.cert"
+      - "--output-signature=${artifact}.sig"
+      - "${artifact}"
+    output: true
+
+snapshot:
+  version_template: "{{ incpatch .Version }}-next"
+
+changelog:
+  sort: asc
+  use: github
+  filters:
+    exclude:
+      - "^docs:"
+      - "^test:"
+      - "^chore:"
+
+release:
+  draft: false
+  github:
+    owner: statusharbor
+    name: lighthouse
+  header: |
+    ## Lighthouse {{ .Tag }}
+
+    Verify a downloaded binary:
+    ```bash
+    cosign verify-blob \
+      --certificate lighthouse_linux_amd64.cert \
+      --signature  lighthouse_linux_amd64.sig \
+      --certificate-identity-regexp 'https://github.com/statusharbor/lighthouse' \
+      --certificate-oidc-issuer 'https://token.actions.githubusercontent.com' \
+      lighthouse_linux_amd64
+    ```
