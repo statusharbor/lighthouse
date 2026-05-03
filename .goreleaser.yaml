@@ -26,9 +26,13 @@ builds:
     goos:
       - linux
       - darwin
+      - windows
     goarch:
       - amd64
       - arm64
+    # Windows binaries get a .exe suffix automatically via goreleaser when
+    # GOOS=windows. The binary template above expands to e.g.
+    # `lighthouse_windows_amd64.exe`.
 
 archives:
   # Skip archives — we ship raw binaries the install.sh can fetch directly.

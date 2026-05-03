@@ -1,6 +1,6 @@
 # Lighthouse — private network monitoring agent for Status Harbor
 
-Lighthouse is a single static Go binary you run **inside your private
+Lighthouse is a single static binary you run **inside your private
 network** to monitor services that the public internet can't reach. It
 talks to your Status Harbor Console over outbound HTTPS only — no inbound
 ports, no VPN, no reverse tunnel.
@@ -11,6 +11,8 @@ ports, no VPN, no reverse tunnel.
 
 ## Install
 
+### Linux / macOS
+
 ```bash
 curl -fsSL https://lighthouse.statusharbor.io/install.sh \
   | LIGHTHOUSE_TOKEN=<token-from-console> sh
@@ -18,7 +20,23 @@ curl -fsSL https://lighthouse.statusharbor.io/install.sh \
 
 The install script downloads the latest signed release binary, writes a
 minimal `lighthouse.yaml`, and starts the agent under your service
-manager (systemd / launchd / OpenRC, depending on the host).
+manager (systemd on Linux; manual start on macOS — launchd plist
+generation is on the roadmap).
+
+### Windows
+
+A signed Windows binary is published on every release. Download
+`lighthouse_windows_amd64.exe` (or `_arm64.exe`) from
+[GitHub Releases](https://github.com/statusharbor/lighthouse/releases/latest),
+verify the checksum, then run from a directory you control:
+
+```powershell
+$env:LIGHTHOUSE_TOKEN = "<token-from-console>"
+.\lighthouse_windows_amd64.exe -config lighthouse.yaml
+```
+
+For a long-running service, register it with NSSM or
+[`sc.exe create`](https://learn.microsoft.com/en-us/windows-server/administration/windows-commands/sc-create).
 
 ## Configuration
 
