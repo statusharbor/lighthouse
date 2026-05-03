@@ -189,6 +189,8 @@ jobs:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           npx semantic-release
+          # Remove untracked config so goreleaser sees a clean tree.
+          rm -f .releaserc.json
           if tag=$(git describe --tags --exact-match HEAD 2>/dev/null); then
             echo "released=true" >> "$GITHUB_OUTPUT"
             echo "tag=$tag" >> "$GITHUB_OUTPUT"
