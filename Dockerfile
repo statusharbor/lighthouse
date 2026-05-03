@@ -1,5 +1,6 @@
 # Multi-arch image built by goreleaser per architecture (linux/amd64, linux/arm64).
-# The pre-built `lighthouse` binary is copied in from the build context.
+# The pre-built `lighthouse` binary (from the lighthouse-pkg build) is
+# copied in from the build context.
 #
 # Configuration: provide either
 #   - LIGHTHOUSE_TOKEN env var (simplest for k8s/docker-compose), or

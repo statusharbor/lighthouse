@@ -76,7 +76,7 @@ nfpms:
   - id: lighthouse-pkgs
     package_name: lighthouse
     ids: [lighthouse-pkg]
-    formats: [deb, apk]
+    formats: [deb, apk, rpm]
     file_name_template: "lighthouse_{{ .Version }}_{{ .Arch }}{{ if .Arm }}v{{ .Arm }}{{ end }}"
     maintainer: Status Harbor <ops@statusharbor.com>
     description: |
@@ -127,6 +127,11 @@ signs:
 # Multi-arch Docker images on GHCR. One image per arch, then a manifest
 # list combines them. Uses the `lighthouse-pkg` build whose binary is
 # named `lighthouse` (matches the COPY in Dockerfile).
+#
+# NOTE: emits a soft "dockers/docker_manifests are being phased out"
+# warning. dockers_v2 is the replacement but is marked experimental in
+# goreleaser 2.15.x and does not stage binaries into the build context
+# correctly yet. Migrate when dockers_v2 stabilizes.
 dockers:
   - id: lighthouse-amd64
     goos: linux
