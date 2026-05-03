@@ -15,7 +15,7 @@ func TestWorkerPool_CapsConcurrency(t *testing.T) {
 	var inFlight, peak atomic.Int32
 	var wg sync.WaitGroup
 	wg.Add(10)
-	for i := 0; i < 10; i++ {
+	for range 10 {
 		go func() {
 			defer wg.Done()
 			_ = pool.Submit(context.Background(), func() {

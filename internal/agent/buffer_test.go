@@ -99,7 +99,7 @@ func TestBuffer_TrimsToByteCap(t *testing.T) {
 
 	// Append enough events to overflow.
 	var batch []transport.EventInput
-	for i := 0; i < 10; i++ {
+	for range 10 {
 		batch = append(batch, makeEvent("c", "down"))
 	}
 	if err := b.Append(batch); err != nil {

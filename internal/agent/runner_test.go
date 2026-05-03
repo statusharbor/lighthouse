@@ -393,7 +393,7 @@ func TestObserveAndEmit_FlapProtectionDelaysCommit(t *testing.T) {
 
 	// Flip executor to "down" — first two should be silent, third commits.
 	exec.out["c1"] = CheckObservation{State: StateDown}
-	for i := 0; i < 2; i++ {
+	for range 2 {
 		_ = r.ObserveAndEmit(context.Background(), CheckDefinition{ID: "c1"})
 	}
 	if len(mock.eventBatches) != 1 {
@@ -422,8 +422,8 @@ func newShutdownMock(t *testing.T) *recordingShutdownMock {
 	wrapper := &recordingShutdownMock{recordingFullMock: full}
 
 	// Wrap the existing handler to also catch /shutdown.
-	originalHandler := full.Server.Config.Handler
-	full.Server.Config.Handler = http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	originalHandler := full.Config.Handler
+	full.Config.Handler = http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path == "/api/lighthouse/v1/shutdown" {
 			var req transport.ShutdownRequest
 			_ = json.NewDecoder(r.Body).Decode(&req)
