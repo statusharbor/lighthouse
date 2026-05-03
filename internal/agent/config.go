@@ -15,10 +15,15 @@ import (
 	"gopkg.in/yaml.v3"
 )
 
-// ConsoleURL is the hardcoded Status Harbor ingress for agent traffic. Not
-// configurable — see design doc §7.2 (single secret, no drift between token
-// and URL).
-const ConsoleURL = "https://lighthouse.statusharbor.io"
+// ConsoleURL is the Status Harbor ingress for agent traffic. Hardcoded for
+// production builds so customers can't accidentally redirect agents at a
+// stranger's Console (see design §7.2 — single secret, no URL drift).
+//
+// Overridable at build time via:
+//   go build -ldflags="-X github.com/statusharbor/lighthouse/internal/agent.ConsoleURL=https://test/"
+//
+// Used by the cross-repo smoke test in the main repo's e2e harness.
+var ConsoleURL = "https://lighthouse.statusharbor.io"
 
 // Config is the on-disk configuration written by install.sh. Only `token`
 // is required.

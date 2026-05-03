@@ -79,7 +79,11 @@ func main() {
 		"check_count", len(regResp.Checks),
 	)
 
-	executor := newRealExecutor() // populated in a follow-up slice; today returns "up" so the agent runs
+	// Wrap the protocol-dispatching executor in the logging decorator. At
+	// the default info level these logs are silent; flipping
+	// agent.log_level=debug surfaces redacted check inputs/outputs for
+	// troubleshooting (per design §11).
+	executor := agent.NewLoggingExecutor(newRealExecutor(), nil)
 	r := agent.NewRunner(cfg, client, executor)
 	if buf != nil {
 		r.SetBuffer(buf)
