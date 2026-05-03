@@ -11,6 +11,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"strings"
 
 	"gopkg.in/yaml.v3"
 )
@@ -47,30 +48,46 @@ const (
 	DefaultLogLevel            = "info"
 )
 
-// LoadFile reads a Config from the given YAML path.
+// EnvToken is the environment variable read by Load to supply or override
+// the token. Container/k8s deployments use this to avoid mounting a YAML.
+const EnvToken = "LIGHTHOUSE_TOKEN"
+
+// LoadFile reads a Config from the given YAML path. A missing file is not
+// an error: Load is invoked with empty input so the LIGHTHOUSE_TOKEN env
+// var (if set) can supply the token without any on-disk config.
 func LoadFile(path string) (*Config, error) {
 	f, err := os.Open(path)
 	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return Load(strings.NewReader(""))
+		}
 		return nil, fmt.Errorf("open config: %w", err)
 	}
 	defer func() { _ = f.Close() }()
 	return Load(f)
 }
 
-// Load parses YAML config from any reader. Empty fields fall back to the
-// Default* constants. Returns an error when the token is missing — without
-// it the agent cannot authenticate to the Console.
+// Load parses YAML config from any reader and applies environment-variable
+// overrides. The LIGHTHOUSE_TOKEN env var (if set and non-empty) takes
+// precedence over the `token:` field in YAML. Empty fields fall back to
+// the Default* constants. Returns an error when the token is missing
+// from both YAML and env — without it the agent cannot authenticate.
 func Load(r io.Reader) (*Config, error) {
 	b, err := io.ReadAll(r)
 	if err != nil {
 		return nil, fmt.Errorf("read config: %w", err)
 	}
 	var cfg Config
-	if err := yaml.Unmarshal(b, &cfg); err != nil {
-		return nil, fmt.Errorf("parse config: %w", err)
+	if len(b) > 0 {
+		if err := yaml.Unmarshal(b, &cfg); err != nil {
+			return nil, fmt.Errorf("parse config: %w", err)
+		}
+	}
+	if v := os.Getenv(EnvToken); v != "" {
+		cfg.Token = v
 	}
 	if cfg.Token == "" {
-		return nil, errors.New("config: token is required")
+		return nil, fmt.Errorf("config: token is required (set in YAML or %s env)", EnvToken)
 	}
 	if cfg.Agent.DataDir == "" {
 		cfg.Agent.DataDir = DefaultDataDir

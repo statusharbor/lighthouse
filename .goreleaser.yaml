@@ -95,20 +95,26 @@ checksum:
   name_template: "checksums.txt"
   algorithm: sha256
 
-# SBOM in SPDX JSON, one per binary.
+# SBOM in SPDX JSON, one per published binary. Scoped to the `lighthouse`
+# build so we get one SBOM per OS/arch (unique filenames). The
+# `lighthouse-pkg` binaries are the same source and would produce
+# identical SBOMs with colliding names.
 sboms:
   - id: lighthouse-sbom
     artifacts: binary
+    ids: [lighthouse]
     documents:
       - "{{ .ArtifactName }}.spdx.json"
     cmd: syft
     args: ["$artifact", "--output", "spdx-json=$document"]
 
 # Cosign keyless signing (Sigstore). The keyless flow uses the GitHub
-# Actions OIDC token; no private key is stored anywhere.
+# Actions OIDC token; no private key is stored anywhere. Scoped to
+# `lighthouse` for the same reason as sboms.
 signs:
   - id: cosign-binary
     artifacts: binary
+    ids: [lighthouse]
     cmd: cosign
     args:
       - sign-blob
@@ -116,6 +122,83 @@ signs:
       - "--output-certificate=${artifact}.cert"
       - "--output-signature=${artifact}.sig"
       - "${artifact}"
+    output: true
+
+# Multi-arch Docker images on GHCR. One image per arch, then a manifest
+# list combines them. Uses the `lighthouse-pkg` build whose binary is
+# named `lighthouse` (matches the COPY in Dockerfile).
+dockers:
+  - id: lighthouse-amd64
+    goos: linux
+    goarch: amd64
+    ids: [lighthouse-pkg]
+    use: buildx
+    dockerfile: Dockerfile
+    image_templates:
+      - "ghcr.io/statusharbor/lighthouse:{{ .Version }}-amd64"
+      - "ghcr.io/statusharbor/lighthouse:{{ .Major }}.{{ .Minor }}-amd64"
+      - "ghcr.io/statusharbor/lighthouse:{{ .Major }}-amd64"
+      - "ghcr.io/statusharbor/lighthouse:latest-amd64"
+    build_flag_templates:
+      - "--platform=linux/amd64"
+      - "--label=org.opencontainers.image.title=lighthouse"
+      - "--label=org.opencontainers.image.description=Status Harbor Lighthouse — private network monitoring agent"
+      - "--label=org.opencontainers.image.source=https://github.com/statusharbor/lighthouse"
+      - "--label=org.opencontainers.image.url=https://statusharbor.com"
+      - "--label=org.opencontainers.image.version={{ .Version }}"
+      - "--label=org.opencontainers.image.revision={{ .FullCommit }}"
+      - "--label=org.opencontainers.image.created={{ .Date }}"
+      - "--label=org.opencontainers.image.licenses=Apache-2.0"
+
+  - id: lighthouse-arm64
+    goos: linux
+    goarch: arm64
+    ids: [lighthouse-pkg]
+    use: buildx
+    dockerfile: Dockerfile
+    image_templates:
+      - "ghcr.io/statusharbor/lighthouse:{{ .Version }}-arm64"
+      - "ghcr.io/statusharbor/lighthouse:{{ .Major }}.{{ .Minor }}-arm64"
+      - "ghcr.io/statusharbor/lighthouse:{{ .Major }}-arm64"
+      - "ghcr.io/statusharbor/lighthouse:latest-arm64"
+    build_flag_templates:
+      - "--platform=linux/arm64"
+      - "--label=org.opencontainers.image.title=lighthouse"
+      - "--label=org.opencontainers.image.description=Status Harbor Lighthouse — private network monitoring agent"
+      - "--label=org.opencontainers.image.source=https://github.com/statusharbor/lighthouse"
+      - "--label=org.opencontainers.image.url=https://statusharbor.com"
+      - "--label=org.opencontainers.image.version={{ .Version }}"
+      - "--label=org.opencontainers.image.revision={{ .FullCommit }}"
+      - "--label=org.opencontainers.image.created={{ .Date }}"
+      - "--label=org.opencontainers.image.licenses=Apache-2.0"
+
+docker_manifests:
+  - name_template: "ghcr.io/statusharbor/lighthouse:{{ .Version }}"
+    image_templates:
+      - "ghcr.io/statusharbor/lighthouse:{{ .Version }}-amd64"
+      - "ghcr.io/statusharbor/lighthouse:{{ .Version }}-arm64"
+  - name_template: "ghcr.io/statusharbor/lighthouse:{{ .Major }}.{{ .Minor }}"
+    image_templates:
+      - "ghcr.io/statusharbor/lighthouse:{{ .Major }}.{{ .Minor }}-amd64"
+      - "ghcr.io/statusharbor/lighthouse:{{ .Major }}.{{ .Minor }}-arm64"
+  - name_template: "ghcr.io/statusharbor/lighthouse:{{ .Major }}"
+    image_templates:
+      - "ghcr.io/statusharbor/lighthouse:{{ .Major }}-amd64"
+      - "ghcr.io/statusharbor/lighthouse:{{ .Major }}-arm64"
+  - name_template: "ghcr.io/statusharbor/lighthouse:latest"
+    image_templates:
+      - "ghcr.io/statusharbor/lighthouse:latest-amd64"
+      - "ghcr.io/statusharbor/lighthouse:latest-arm64"
+
+# Cosign keyless signing for Docker images (signs the multi-arch manifest list).
+docker_signs:
+  - id: cosign-image
+    artifacts: manifests
+    cmd: cosign
+    args:
+      - sign
+      - "--yes"
+      - "${artifact}@${digest}"
     output: true
 
 snapshot:

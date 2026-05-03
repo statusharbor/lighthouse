@@ -38,6 +38,47 @@ $env:LIGHTHOUSE_TOKEN = "<token-from-console>"
 For a long-running service, register it with NSSM or
 [`sc.exe create`](https://learn.microsoft.com/en-us/windows-server/administration/windows-commands/sc-create).
 
+### Docker
+
+Multi-arch images (`linux/amd64`, `linux/arm64`) are published to GitHub
+Container Registry on every release: `ghcr.io/statusharbor/lighthouse`.
+The image is Alpine-based, runs as a non-root user (uid `10001`), and
+has no shell entrypoint — pass flags directly to `docker run`.
+
+Three ways to provide config:
+
+**1. Environment variable only (simplest, no YAML required):**
+
+```bash
+docker run -d --name lighthouse \
+  -e LIGHTHOUSE_TOKEN=<token-from-console> \
+  -v lighthouse-data:/var/lib/lighthouse \
+  ghcr.io/statusharbor/lighthouse:latest
+```
+
+**2. Mounted YAML config:**
+
+```bash
+docker run -d --name lighthouse \
+  -v /host/path/lighthouse.yaml:/etc/lighthouse/lighthouse.yaml:ro \
+  -v lighthouse-data:/var/lib/lighthouse \
+  ghcr.io/statusharbor/lighthouse:latest
+```
+
+**3. YAML for tuning + env var for the token** (env wins on conflict):
+
+```bash
+docker run -d --name lighthouse \
+  -v /host/path/lighthouse.yaml:/etc/lighthouse/lighthouse.yaml:ro \
+  -v lighthouse-data:/var/lib/lighthouse \
+  -e LIGHTHOUSE_TOKEN=<token-from-console> \
+  ghcr.io/statusharbor/lighthouse:latest
+```
+
+The `lighthouse-data` named volume persists the offline buffer across
+container restarts; without it, results captured during a Console outage
+are lost when the container is recreated.
+
 ## Configuration
 
 `lighthouse.yaml` (written by `install.sh`):
