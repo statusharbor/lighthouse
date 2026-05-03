@@ -111,10 +111,10 @@ func (r *Runner) runCheckLoop(ctx context.Context, def CheckDefinition, pool *wo
 	// Jitter the first tick to avoid stampedes when many checks share an
 	// interval. Bounded by interval/4 so we don't delay observably.
 	maxJitter := interval / 4
-	if maxJitter < time.Second {
-		maxJitter = time.Second
+	var jitter time.Duration
+	if maxJitter > 0 {
+		jitter = time.Duration(rand.Int63n(int64(maxJitter)))
 	}
-	jitter := time.Duration(rand.Int63n(int64(maxJitter)))
 	select {
 	case <-ctx.Done():
 		return

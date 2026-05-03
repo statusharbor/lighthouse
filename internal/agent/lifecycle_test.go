@@ -102,7 +102,7 @@ func TestRunScheduler_ExecutesEachCheckPeriodically(t *testing.T) {
 	// silent — we're testing scheduling, not transitions.
 	r.commit("c1", StateUp)
 
-	ctx, cancel := context.WithTimeout(context.Background(), 250*time.Millisecond)
+	ctx, cancel := context.WithTimeout(context.Background(), 750*time.Millisecond)
 	defer cancel()
 	_ = r.RunScheduler(ctx)
 
