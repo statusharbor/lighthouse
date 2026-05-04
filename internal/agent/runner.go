@@ -2,6 +2,7 @@ package agent
 
 import (
 	"context"
+	"log/slog"
 	"sync"
 	"time"
 
@@ -45,12 +46,29 @@ func NewRunner(cfg *Config, client *transport.Client, executor CheckExecutor) *R
 // ApplyConfig adopts a fresh checks list + flap-protection threshold from
 // either /register or a /heartbeat that returned a new etag. Atomic swap
 // under the runner mutex so the scheduler reads a consistent view.
-func (r *Runner) ApplyConfig(checks []CheckDefinition, flapThreshold int, paused bool) {
+//
+// Returns the subset of `checks` whose IDs were not present in the previous
+// list — callers running the heartbeat path use this to seed initial-sync
+// for monitors that arrived post-startup (without a re-sync these checks
+// would never emit a state event because the flap tracker treats them as
+// committed-state-unknown forever; see flap.Observe).
+func (r *Runner) ApplyConfig(checks []CheckDefinition, flapThreshold int, paused bool) []CheckDefinition {
 	r.mu.Lock()
 	defer r.mu.Unlock()
+	prev := make(map[string]struct{}, len(r.checks))
+	for _, c := range r.checks {
+		prev[c.ID] = struct{}{}
+	}
+	var added []CheckDefinition
+	for _, c := range checks {
+		if _, ok := prev[c.ID]; !ok {
+			added = append(added, c)
+		}
+	}
 	r.checks = checks
 	r.flap.SetThreshold(flapThreshold)
 	r.paused = paused
+	return added
 }
 
 // Checks returns a snapshot of the current check set. Scheduler reads this
@@ -186,12 +204,38 @@ func (r *Runner) SendHeartbeat(ctx context.Context) (*transport.HeartbeatRespons
 	// view changed; update yours". flap_protection_threshold and paused
 	// always come back, so the runner's view of those tracks the server's
 	// at every heartbeat (cheap to apply, no churn when unchanged).
+	var added []CheckDefinition
 	if resp.Checks != nil {
-		r.ApplyConfig(CheckDefsFromTransport(resp.Checks), resp.FlapProtectionThreshold, resp.Paused)
+		added = r.ApplyConfig(CheckDefsFromTransport(resp.Checks), resp.FlapProtectionThreshold, resp.Paused)
 	} else {
 		r.applyFlapAndPaused(resp.FlapProtectionThreshold, resp.Paused)
 	}
+	// Reconcile state with the server. RequestFullResync wins (re-emit for
+	// every check); otherwise just initial-sync the newly-added checks so
+	// they get their first event (without this they're stuck because the
+	// flap tracker treats them as committed-state-unknown indefinitely).
+	// Done in a goroutine so the heartbeat tick stays fast — agents may
+	// have many checks and observations can take seconds.
+	if resp.RequestFullResync {
+		defs := r.Checks()
+		go r.runResync(ctx, defs, "request_full_resync")
+	} else if len(added) > 0 {
+		go r.runResync(ctx, added, "new_checks")
+	}
 	return resp, nil
+}
+
+// runResync runs an initial-sync batch for the given subset of checks.
+// Best-effort: failures log and drop. The next heartbeat (which sets
+// the resync flag again on the server when needed) will retry.
+func (r *Runner) runResync(ctx context.Context, defs []CheckDefinition, reason string) {
+	if len(defs) == 0 {
+		return
+	}
+	if err := r.RunInitialSync(ctx, defs); err != nil {
+		slog.Warn("resync failed; will retry on next trigger",
+			"reason", reason, "checks", len(defs), "error", err)
+	}
 }
 
 func (r *Runner) applyFlapAndPaused(flapThreshold int, paused bool) {

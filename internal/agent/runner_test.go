@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"sync"
 	"testing"
 	"time"
 
@@ -144,14 +145,34 @@ func TestRunInitialSync_NoChecks_NoNetworkCall(t *testing.T) {
 }
 
 // recordingFullMock captures requests on both /events and /heartbeat.
+// Goroutine-safe: the agent's resync path posts events from a goroutine
+// concurrent with the test reading the slice, so all field access goes
+// through mu.
 type recordingFullMock struct {
 	*httptest.Server
+	mu           sync.Mutex
 	heartbeats   []transport.HeartbeatRequest
 	eventBatches []transport.EventsRequest
 
 	// What heartbeat responses to send (popped from front; falls back to
 	// a default when empty).
 	heartbeatResp []transport.HeartbeatResponse
+}
+
+func (m *recordingFullMock) EventBatches() []transport.EventsRequest {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	out := make([]transport.EventsRequest, len(m.eventBatches))
+	copy(out, m.eventBatches)
+	return out
+}
+
+func (m *recordingFullMock) Heartbeats() []transport.HeartbeatRequest {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	out := make([]transport.HeartbeatRequest, len(m.heartbeats))
+	copy(out, m.heartbeats)
+	return out
 }
 
 func newFullMock(t *testing.T) *recordingFullMock {
@@ -162,18 +183,22 @@ func newFullMock(t *testing.T) *recordingFullMock {
 		case "/api/lighthouse/v1/heartbeat":
 			var req transport.HeartbeatRequest
 			_ = json.NewDecoder(r.Body).Decode(&req)
+			m.mu.Lock()
 			m.heartbeats = append(m.heartbeats, req)
 			resp := transport.HeartbeatResponse{ConfigEtag: "etag-default"}
 			if len(m.heartbeatResp) > 0 {
 				resp = m.heartbeatResp[0]
 				m.heartbeatResp = m.heartbeatResp[1:]
 			}
+			m.mu.Unlock()
 			w.Header().Set("Content-Type", "application/json")
 			_ = json.NewEncoder(w).Encode(resp)
 		case "/api/lighthouse/v1/events":
 			var req transport.EventsRequest
 			_ = json.NewDecoder(r.Body).Decode(&req)
+			m.mu.Lock()
 			m.eventBatches = append(m.eventBatches, req)
+			m.mu.Unlock()
 			w.WriteHeader(http.StatusAccepted)
 			_ = json.NewEncoder(w).Encode(transport.EventsResponse{Received: len(req.Events)})
 		default:
@@ -377,6 +402,118 @@ func TestSendHeartbeat_NoChecks_StillUpdatesPausedAndThreshold(t *testing.T) {
 	if gotThreshold != 5 {
 		t.Errorf("flap threshold = %d, want 5", gotThreshold)
 	}
+}
+
+// ApplyConfig must report which check IDs are new vs already-present so the
+// heartbeat path can initial-sync only the new ones.
+func TestApplyConfig_ReturnsNewlyAddedChecks(t *testing.T) {
+	r := NewRunner(&Config{Token: "x"}, nil, &fakeExecutor{})
+
+	added := r.ApplyConfig([]CheckDefinition{{ID: "a"}, {ID: "b"}}, 1, false)
+	if len(added) != 2 {
+		t.Fatalf("first ApplyConfig: added = %d, want 2 (everything is new on first call)", len(added))
+	}
+
+	added = r.ApplyConfig([]CheckDefinition{{ID: "a"}, {ID: "b"}, {ID: "c"}}, 1, false)
+	if len(added) != 1 || added[0].ID != "c" {
+		t.Errorf("second ApplyConfig: added = %+v, want [{c}]", added)
+	}
+
+	// Removing a check is not considered "added".
+	added = r.ApplyConfig([]CheckDefinition{{ID: "a"}}, 1, false)
+	if len(added) != 0 {
+		t.Errorf("removal-only ApplyConfig: added = %+v, want empty", added)
+	}
+}
+
+// New checks arriving via heartbeat must trigger an initial-sync — without
+// it the agent never seeds r.state for them and ObserveAndEmit silently
+// drops every observation forever (see flap.Observe / hadPrev guard).
+func TestSendHeartbeat_NewChecks_TriggerInitialSync(t *testing.T) {
+	mock := newFullMock(t)
+	mock.heartbeatResp = []transport.HeartbeatResponse{{
+		ConfigEtag:              "new-etag",
+		FlapProtectionThreshold: 1,
+		Checks: []transport.CheckDef{
+			{ID: "c-new", Type: "http", Name: "fresh", IntervalSeconds: 60},
+		},
+	}}
+	client := transport.NewClient(mock.URL, "lh_test")
+	exec := &fakeExecutor{out: map[string]CheckObservation{
+		"c-new": {State: StateUp, ResponseTimeMs: 12, StatusCode: 200},
+	}}
+	r := NewRunner(&Config{Token: "lh_test"}, client, exec)
+
+	if _, err := r.SendHeartbeat(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+
+	// Resync goroutine runs async; wait briefly.
+	if !waitFor(200*time.Millisecond, func() bool {
+		return len(mock.EventBatches()) >= 1
+	}) {
+		t.Fatalf("expected an initial-sync batch for the new check; eventBatches=%d", len(mock.EventBatches()))
+	}
+
+	batches := mock.EventBatches()
+	batch := batches[0]
+	if !batch.IsInitialSync {
+		t.Errorf("event batch is_initial_sync = false, want true")
+	}
+	if len(batch.Events) != 1 || batch.Events[0].CheckID != "c-new" {
+		t.Errorf("event batch = %+v, want one event for c-new", batch.Events)
+	}
+}
+
+// When the server sets request_full_resync=true, the agent must initial-sync
+// EVERY current check, not just newly-added ones.
+func TestSendHeartbeat_RequestFullResync_RunsForAllChecks(t *testing.T) {
+	mock := newFullMock(t)
+	mock.heartbeatResp = []transport.HeartbeatResponse{{
+		ConfigEtag:              "etag-1",
+		FlapProtectionThreshold: 1,
+		RequestFullResync:       true,
+		// No checks in the response (etag matches) — the runner already
+		// has its checks list from a prior ApplyConfig.
+	}}
+	client := transport.NewClient(mock.URL, "lh_test")
+	exec := &fakeExecutor{out: map[string]CheckObservation{
+		"a": {State: StateUp, ResponseTimeMs: 5},
+		"b": {State: StateDown, ErrorMessage: "timeout"},
+	}}
+	r := NewRunner(&Config{Token: "lh_test"}, client, exec)
+	r.ApplyConfig([]CheckDefinition{{ID: "a"}, {ID: "b"}}, 1, false)
+
+	if _, err := r.SendHeartbeat(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+
+	if !waitFor(200*time.Millisecond, func() bool {
+		bs := mock.EventBatches()
+		return len(bs) >= 1 && len(bs[0].Events) >= 2
+	}) {
+		t.Fatalf("expected initial-sync batch with 2 events; got batches=%+v", mock.EventBatches())
+	}
+
+	batch := mock.EventBatches()[0]
+	if !batch.IsInitialSync {
+		t.Errorf("is_initial_sync = false, want true")
+	}
+	if len(batch.Events) != 2 {
+		t.Errorf("events = %d, want 2 (one per current check)", len(batch.Events))
+	}
+}
+
+// waitFor polls cond up to d. Returns true if cond ever true.
+func waitFor(d time.Duration, cond func() bool) bool {
+	deadline := time.Now().Add(d)
+	for time.Now().Before(deadline) {
+		if cond() {
+			return true
+		}
+		time.Sleep(2 * time.Millisecond)
+	}
+	return cond()
 }
 
 func TestObserveAndEmit_FlapProtectionDelaysCommit(t *testing.T) {
