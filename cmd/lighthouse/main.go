@@ -49,7 +49,8 @@ func main() {
 	// still runs).
 	buf, err := agent.NewEventBuffer(cfg.Agent.DataDir)
 	if err != nil {
-		slog.Warn("event buffer disabled (data dir not writable)", "error", err)
+		slog.Warn("event buffer disabled (data dir not writable); set LIGHTHOUSE_DATA_DIR or agent.data_dir to a writable path",
+			"data_dir", cfg.Agent.DataDir, "error", err)
 	}
 
 	ctx, cancel := signal.NotifyContext(context.Background(),

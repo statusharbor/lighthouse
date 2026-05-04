@@ -8,6 +8,8 @@ import (
 
 func TestLoad_RequiresToken(t *testing.T) {
 	t.Setenv(EnvToken, "")
+	t.Setenv(EnvDataDir, "")
+	t.Setenv(EnvLogLevel, "")
 	_, err := Load(strings.NewReader(`agent:
   log_level: debug
 `))
@@ -43,6 +45,50 @@ func TestLoad_EnvTokenOverridesYAML(t *testing.T) {
 	}
 }
 
+func TestLoad_EnvDataDirOverridesYAML(t *testing.T) {
+	t.Setenv(EnvToken, "")
+	t.Setenv(EnvDataDir, "/srv/lh-data")
+	cfg, err := Load(strings.NewReader(`
+token: lh_x
+agent:
+  data_dir: /var/lib/lighthouse
+`))
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if cfg.Agent.DataDir != "/srv/lh-data" {
+		t.Errorf("env should override YAML, got %q", cfg.Agent.DataDir)
+	}
+}
+
+func TestLoad_EnvDataDirSuppliesMissingValue(t *testing.T) {
+	t.Setenv(EnvToken, "")
+	t.Setenv(EnvDataDir, "/srv/lh-data")
+	cfg, err := Load(strings.NewReader(`token: lh_x`))
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if cfg.Agent.DataDir != "/srv/lh-data" {
+		t.Errorf("env should supply data_dir when YAML omits it, got %q", cfg.Agent.DataDir)
+	}
+}
+
+func TestLoad_EnvLogLevelOverridesYAML(t *testing.T) {
+	t.Setenv(EnvToken, "")
+	t.Setenv(EnvLogLevel, "debug")
+	cfg, err := Load(strings.NewReader(`
+token: lh_x
+agent:
+  log_level: info
+`))
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if cfg.Agent.LogLevel != "debug" {
+		t.Errorf("env should override YAML, got %q", cfg.Agent.LogLevel)
+	}
+}
+
 func TestLoadFile_MissingFileFallsBackToEnv(t *testing.T) {
 	t.Setenv(EnvToken, "lh_env_only")
 	cfg, err := LoadFile(filepath.Join(t.TempDir(), "does-not-exist.yaml"))
@@ -59,6 +105,8 @@ func TestLoadFile_MissingFileFallsBackToEnv(t *testing.T) {
 
 func TestLoadFile_MissingFileAndNoEnvErrors(t *testing.T) {
 	t.Setenv(EnvToken, "")
+	t.Setenv(EnvDataDir, "")
+	t.Setenv(EnvLogLevel, "")
 	_, err := LoadFile(filepath.Join(t.TempDir(), "does-not-exist.yaml"))
 	if err == nil {
 		t.Fatal("expected error when neither file nor env provides token")
@@ -67,6 +115,8 @@ func TestLoadFile_MissingFileAndNoEnvErrors(t *testing.T) {
 
 func TestLoad_AppliesDefaults(t *testing.T) {
 	t.Setenv(EnvToken, "")
+	t.Setenv(EnvDataDir, "")
+	t.Setenv(EnvLogLevel, "")
 	cfg, err := Load(strings.NewReader(`token: lh_abc`))
 	if err != nil {
 		t.Fatalf("Load: %v", err)
@@ -87,6 +137,8 @@ func TestLoad_AppliesDefaults(t *testing.T) {
 
 func TestLoad_PreservesExplicitValues(t *testing.T) {
 	t.Setenv(EnvToken, "")
+	t.Setenv(EnvDataDir, "")
+	t.Setenv(EnvLogLevel, "")
 	cfg, err := Load(strings.NewReader(`
 token: lh_abc
 agent:

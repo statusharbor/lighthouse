@@ -5,7 +5,8 @@
 # Configuration: provide either
 #   - LIGHTHOUSE_TOKEN env var (simplest for k8s/docker-compose), or
 #   - a YAML config mounted at /etc/lighthouse/lighthouse.yaml
-# Both can be combined; LIGHTHOUSE_TOKEN takes precedence over the YAML token.
+# Both can be combined; env vars (LIGHTHOUSE_TOKEN, LIGHTHOUSE_DATA_DIR,
+# LIGHTHOUSE_LOG_LEVEL) take precedence over the equivalent YAML fields.
 FROM alpine:3.20
 
 ARG TARGETPLATFORM

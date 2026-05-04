@@ -220,7 +220,25 @@ agent:
   data_dir: /var/lib/lighthouse
   max_concurrent_checks: 10
   log_level: info
+  health_port: 0          # 0 disables; set to e.g. 9093 for K8s probes
 ```
+
+### Environment-variable overrides
+
+Several fields can be set via env vars; the env value wins over YAML.
+This makes container/k8s deploys workable without mounting a config
+file:
+
+| Env var                | YAML field        | Notes                                       |
+|------------------------|-------------------|---------------------------------------------|
+| `LIGHTHOUSE_TOKEN`     | `token`           | Required (one of YAML or env must be set)   |
+| `LIGHTHOUSE_DATA_DIR`  | `agent.data_dir`  | Override the offline-buffer location        |
+| `LIGHTHOUSE_LOG_LEVEL` | `agent.log_level` | `info` (default) or `debug`                 |
+
+If you see `event buffer disabled (data dir not writable)` in the logs,
+the agent can't create `/var/lib/lighthouse` — set `LIGHTHOUSE_DATA_DIR`
+to a writable path (e.g. `~/.lighthouse` for dev) or set
+`agent.data_dir` in YAML.
 
 The Console URL is **hardcoded** in the binary
 (`https://lighthouse.statusharbor.io`). The agent never persists or

@@ -52,9 +52,14 @@ const (
 	DefaultLogLevel            = "info"
 )
 
-// EnvToken is the environment variable read by Load to supply or override
-// the token. Container/k8s deployments use this to avoid mounting a YAML.
-const EnvToken = "LIGHTHOUSE_TOKEN"
+// Environment-variable overrides read by Load. Each takes precedence
+// over the equivalent YAML field, so container/k8s deployments can set
+// these without mounting a config file.
+const (
+	EnvToken    = "LIGHTHOUSE_TOKEN"
+	EnvDataDir  = "LIGHTHOUSE_DATA_DIR"
+	EnvLogLevel = "LIGHTHOUSE_LOG_LEVEL"
+)
 
 // LoadFile reads a Config from the given YAML path. A missing file is not
 // an error: Load is invoked with empty input so the LIGHTHOUSE_TOKEN env
@@ -89,6 +94,12 @@ func Load(r io.Reader) (*Config, error) {
 	}
 	if v := os.Getenv(EnvToken); v != "" {
 		cfg.Token = v
+	}
+	if v := os.Getenv(EnvDataDir); v != "" {
+		cfg.Agent.DataDir = v
+	}
+	if v := os.Getenv(EnvLogLevel); v != "" {
+		cfg.Agent.LogLevel = v
 	}
 	if cfg.Token == "" {
 		return nil, fmt.Errorf("config: token is required (set in YAML or %s env)", EnvToken)
