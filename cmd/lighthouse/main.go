@@ -9,6 +9,7 @@ import (
 	"context"
 	"errors"
 	"flag"
+	"fmt"
 	"log/slog"
 	"os"
 	"os/signal"
@@ -55,6 +56,19 @@ func main() {
 		syscall.SIGINT, syscall.SIGTERM)
 	defer cancel()
 
+	// Health probes for Kubernetes (and anything else that wants
+	// /healthz/{live,ready}). Disabled when health_port is zero.
+	health := agent.NewHealthState(agent.DefaultHealthLivenessThreshold)
+	if cfg.Agent.HealthPort > 0 {
+		addr := fmt.Sprintf(":%d", cfg.Agent.HealthPort)
+		go func() {
+			slog.Info("health server listening", "addr", addr)
+			if err := health.RunServer(ctx, addr); err != nil {
+				slog.Error("health server terminated", "error", err)
+			}
+		}()
+	}
+
 	// Register, then initial sync. Both must succeed before we start
 	// heartbeats and check scheduling.
 	registerCtx, registerCancel := context.WithTimeout(ctx, 30*time.Second)
@@ -79,6 +93,8 @@ func main() {
 		"check_count", len(regResp.Checks),
 	)
 
+	health.MarkReady()
+
 	// Wrap the protocol-dispatching executor in the logging decorator. At
 	// the default info level these logs are silent; flipping
 	// agent.log_level=debug surfaces redacted check inputs/outputs for
@@ -88,6 +104,7 @@ func main() {
 	if buf != nil {
 		r.SetBuffer(buf)
 	}
+	r.SetHealthState(health)
 	r.SetEtag(regResp.ConfigEtag)
 	r.ApplyConfig(
 		agent.CheckDefsFromTransport(regResp.Checks),

@@ -1,0 +1,135 @@
+# Default values for the lighthouse chart.
+
+image:
+  repository: ghcr.io/statusharbor/lighthouse
+  # Defaults to .Chart.AppVersion when empty.
+  tag: ""
+  pullPolicy: IfNotPresent
+
+imagePullSecrets: []
+
+# Health probes (Kubernetes liveness/readiness). When enabled, the agent
+# starts an HTTP server on this port serving /healthz/{live,ready}.
+# Liveness fails when the most-recent successful Console heartbeat is
+# older than ~45s; readiness flips to 200 after the first /register.
+healthz:
+  enabled: true
+  port: 9093
+  livenessProbe:
+    initialDelaySeconds: 30
+    periodSeconds: 30
+    failureThreshold: 3
+    timeoutSeconds: 3
+  readinessProbe:
+    initialDelaySeconds: 5
+    periodSeconds: 10
+    failureThreshold: 3
+    timeoutSeconds: 3
+
+# The lighthouse token from the Status Harbor Console.
+#
+# Provide via either:
+#   1. --set token=lh_xxx_yyy (chart will create a Secret named
+#      "{{ release }}-token")
+#   2. existingSecret.name: my-secret + key: my-key (use a Secret you
+#      manage out-of-band, e.g. via External Secrets / Sealed Secrets)
+token: ""
+
+existingSecret:
+  name: ""
+  key: token
+
+# Agent-side tuning. Serialized into a ConfigMap mounted at
+# /etc/lighthouse/lighthouse.yaml. Token is supplied via env, never here.
+# Empty fields fall back to lighthouse's compiled-in defaults.
+agent:
+  dataDir: ""              # default: /var/lib/lighthouse
+  maxConcurrentChecks: 0   # default: 10
+  logLevel: ""             # default: info  (set to "debug" for verbose logs)
+
+serviceAccount:
+  create: true
+  name: ""
+  annotations: {}
+
+# StatefulSet replica count. MUST be 1 — the chart fails the install
+# otherwise. Two agents sharing one token would post duplicate
+# observations to the Console. To run multiple lighthouses on a cluster,
+# install this chart multiple times with separate tokens (one Helm
+# release per network location).
+replicaCount: 1
+
+resources:
+  requests:
+    cpu: 50m
+    memory: 64Mi
+  limits:
+    cpu: 200m
+    memory: 256Mi
+
+persistence:
+  # When false, /var/lib/lighthouse is an emptyDir — buffered events are
+  # lost on pod restart. Disable only if your Console is highly available.
+  enabled: true
+  size: 5Gi
+  accessMode: ReadWriteOnce
+  storageClass: ""
+
+podSecurityContext:
+  runAsNonRoot: true
+  runAsUser: 10001
+  runAsGroup: 101
+  fsGroup: 101
+  seccompProfile:
+    type: RuntimeDefault
+
+containerSecurityContext:
+  allowPrivilegeEscalation: false
+  readOnlyRootFilesystem: true
+  capabilities:
+    drop:
+      - ALL
+
+podAnnotations: {}
+podLabels: {}
+
+nodeSelector: {}
+tolerations: []
+affinity: {}
+
+# Optional: extra environment variables passed to the container.
+extraEnv: []
+# - name: HTTPS_PROXY
+#   value: http://proxy.internal:3128
+
+# PodDisruptionBudget. Off by default — voluntary disruptions
+# (node drains, cluster autoscaler) recreate the pod elsewhere with
+# only a brief gap, which is usually acceptable. Enable if you need
+# to block drains entirely (e.g., scheduled-maintenance windows where
+# uninterrupted monitoring is required).
+podDisruptionBudget:
+  enabled: false
+  # Set exactly one of these:
+  minAvailable: 1
+  # maxUnavailable: 0
+
+# NetworkPolicy. Off by default because the agent legitimately needs
+# broad outbound to reach the Console *and* every check target you
+# configure. Enable for defense-in-depth, then list your check targets
+# under additionalEgress to keep checks working.
+#
+# Built-in rules when enabled:
+#   - Ingress: TCP on healthz.port from any source (kubelet probes;
+#     kubelet's source IP varies per cluster). Empty if healthz disabled.
+#   - Egress:  UDP/TCP 53 to any (DNS), TCP 443 to 0.0.0.0/0 minus
+#     link-local (Console + HTTPS check targets).
+networkPolicy:
+  enabled: false
+  additionalIngress: []
+  # Append rules for each check protocol/target you use, e.g.:
+  additionalEgress: []
+  # - to:
+  #     - namespaceSelector: { matchLabels: { kubernetes.io/metadata.name: production } }
+  #   ports:
+  #     - { protocol: TCP, port: 8080 }
+  #     - { protocol: TCP, port: 5432 }

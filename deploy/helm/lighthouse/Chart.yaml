@@ -1,0 +1,19 @@
+apiVersion: v2
+name: lighthouse
+description: Status Harbor Lighthouse — private network monitoring agent
+type: application
+version: 0.1.0
+appVersion: "0.1.0"
+home: https://statusharbor.com
+sources:
+  - https://github.com/statusharbor/lighthouse
+maintainers:
+  - name: Status Harbor
+    email: ops@statusharbor.com
+keywords:
+  - monitoring
+  - uptime
+  - statusharbor
+  - private-network
+  - agent
+icon: https://statusharbor.com/favicon.svg

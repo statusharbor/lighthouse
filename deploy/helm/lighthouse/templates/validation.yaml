@@ -1,0 +1,9 @@
+{{- /*
+Reject installs that would run more than one lighthouse with the same
+token. Two agents posting under one identity produce duplicate events
+and flapping state on the Console. See "Scaling and high availability"
+in the README.
+*/ -}}
+{{- if ne (int .Values.replicaCount) 1 }}
+{{- fail (printf "lighthouse: replicaCount must be 1 (got %d). Two agents sharing one token would post duplicate observations to the Console. To run multiple lighthouses, install the chart multiple times with separate tokens." (int .Values.replicaCount)) }}
+{{- end }}

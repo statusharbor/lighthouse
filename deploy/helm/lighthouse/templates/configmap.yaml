@@ -1,0 +1,21 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ printf "%s-config" (include "lighthouse.fullname" .) }}
+  labels:
+    {{- include "lighthouse.labels" . | nindent 4 }}
+data:
+  lighthouse.yaml: |
+    agent:
+      {{- if .Values.healthz.enabled }}
+      health_port: {{ .Values.healthz.port }}
+      {{- end }}
+      {{- with .Values.agent.dataDir }}
+      data_dir: {{ . | quote }}
+      {{- end }}
+      {{- if .Values.agent.maxConcurrentChecks }}
+      max_concurrent_checks: {{ .Values.agent.maxConcurrentChecks }}
+      {{- end }}
+      {{- with .Values.agent.logLevel }}
+      log_level: {{ . | quote }}
+      {{- end }}

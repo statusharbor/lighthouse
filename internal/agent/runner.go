@@ -27,6 +27,7 @@ type Runner struct {
 	checks    []CheckDefinition
 	flap      *flapTracker
 	paused    bool
+	health    *HealthState
 }
 
 // NewRunner wires a Runner. The executor abstraction is what tests stub.
@@ -265,6 +266,15 @@ func (r *Runner) SetBuffer(b *EventBuffer) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	r.buffer = b
+}
+
+// SetHealthState attaches a HealthState the heartbeat loop will update on
+// every successful Console round-trip. Optional — leave nil to disable
+// the /healthz endpoints (e.g., bare-metal installs).
+func (r *Runner) SetHealthState(h *HealthState) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.health = h
 }
 
 // Shutdown is the orderly teardown path triggered by SIGTERM (cmd/lighthouse

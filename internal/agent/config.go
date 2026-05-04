@@ -39,6 +39,10 @@ type AgentConfig struct {
 	DataDir             string `yaml:"data_dir"`
 	MaxConcurrentChecks int    `yaml:"max_concurrent_checks"`
 	LogLevel            string `yaml:"log_level"`
+	// HealthPort exposes /healthz/{live,ready} on this TCP port for
+	// Kubernetes probes. Zero (the default) disables the listener;
+	// the Helm chart sets it to 9093.
+	HealthPort int `yaml:"health_port"`
 }
 
 // Default values applied to omitted fields.

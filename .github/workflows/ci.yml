@@ -78,11 +78,51 @@ jobs:
           version: latest
           args: --timeout=5m
 
+  helm-lint:
+    name: Helm Lint
+    if: "!startsWith(github.event.head_commit.message, 'chore(release):')"
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: azure/setup-helm@v4
+        with:
+          version: latest
+
+      - name: helm lint (default values)
+        run: helm lint deploy/helm/lighthouse --set token=lh_test
+
+      - name: helm template — default values
+        run: helm template lighthouse deploy/helm/lighthouse --set token=lh_test > /dev/null
+
+      - name: helm template — PDB + NetworkPolicy enabled
+        run: |
+          helm template lighthouse deploy/helm/lighthouse \
+            --set token=lh_test \
+            --set podDisruptionBudget.enabled=true \
+            --set networkPolicy.enabled=true > /dev/null
+
+      - name: helm template — existingSecret path
+        run: |
+          helm template lighthouse deploy/helm/lighthouse \
+            --set existingSecret.name=lighthouse-token \
+            --set existingSecret.key=token > /dev/null
+
+      - name: replicaCount=2 must be rejected by validation guard
+        run: |
+          if helm template lighthouse deploy/helm/lighthouse \
+              --set token=lh_test --set replicaCount=2 > /dev/null 2>&1; then
+            echo "::error::replicaCount=2 should fail but didn't — singleton guard is broken"
+            exit 1
+          fi
+          echo "guard rejected replicaCount=2 as expected"
+
   notify-failure:
     name: Notify Failure
     runs-on: ubuntu-latest
-    needs: [build, test, lint]
-    if: ${{ always() && (needs.build.result == 'failure' || needs.test.result == 'failure' || needs.lint.result == 'failure') }}
+    needs: [build, test, lint, helm-lint]
+    if: ${{ always() && (needs.build.result == 'failure' || needs.test.result == 'failure' || needs.lint.result == 'failure' || needs.helm-lint.result == 'failure') }}
     steps:
       - name: Send Telegram notification on failure
         uses: appleboy/telegram-action@v0.1.1
@@ -103,7 +143,7 @@ jobs:
   release:
     name: Release
     runs-on: ubuntu-latest
-    needs: [build, test, lint]
+    needs: [build, test, lint, helm-lint]
     if: github.ref == 'refs/heads/master' && github.event_name == 'push' && !startsWith(github.event.head_commit.message, 'chore(release):')
     permissions:
       contents: write     # push tag, create GitHub release
@@ -145,11 +185,17 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
+      - name: Set up Helm
+        uses: azure/setup-helm@v4
+        with:
+          version: latest
+
       - name: Install semantic-release
         run: |
           npm install -g --loglevel=error \
             semantic-release@23 \
             @semantic-release/git@10 \
+            @semantic-release/exec@6 \
             @semantic-release/commit-analyzer@11 \
             @semantic-release/release-notes-generator@12 \
             conventional-changelog-conventionalcommits@7
@@ -187,9 +233,15 @@ jobs:
                 }
               ],
               [
+                "@semantic-release/exec",
+                {
+                  "prepareCmd": "sed -i 's/^version: .*/version: ${nextRelease.version}/' deploy/helm/lighthouse/Chart.yaml && sed -i 's/^appVersion: .*/appVersion: \"${nextRelease.version}\"/' deploy/helm/lighthouse/Chart.yaml"
+                }
+              ],
+              [
                 "@semantic-release/git",
                 {
-                  "assets": [],
+                  "assets": ["deploy/helm/lighthouse/Chart.yaml"],
                   "message": "chore(release): ${nextRelease.version} [skip ci]"
                 }
               ]
@@ -220,6 +272,18 @@ jobs:
           args: release --clean
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Push Helm chart to GHCR (OCI)
+        if: steps.semrel.outputs.released == 'true'
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG: ${{ steps.semrel.outputs.tag }}
+        run: |
+          VERSION="${TAG#v}"
+          echo "$GITHUB_TOKEN" | helm registry login ghcr.io -u "${{ github.actor }}" --password-stdin
+          helm package deploy/helm/lighthouse --destination /tmp/charts
+          helm push "/tmp/charts/lighthouse-${VERSION}.tgz" oci://ghcr.io/statusharbor/charts
+          helm registry logout ghcr.io
 
       - name: Send Telegram notification on success
         if: ${{ success() && steps.semrel.outputs.released == 'true' }}

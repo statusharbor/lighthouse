@@ -23,12 +23,17 @@ func (r *Runner) RunHeartbeat(ctx context.Context, interval time.Duration) error
 		case <-ctx.Done():
 			return nil
 		case <-t.C:
-			if _, err := r.SendHeartbeat(ctx); err != nil {
+			_, err := r.SendHeartbeat(ctx)
+			if err != nil {
 				if errors.Is(err, transport.ErrLighthouseGone) {
 					return err
 				}
 				slog.Warn("heartbeat failed; will retry on next tick",
 					"interval", interval, "error", err)
+				continue
+			}
+			if r.health != nil {
+				r.health.RecordHeartbeat()
 			}
 		}
 	}

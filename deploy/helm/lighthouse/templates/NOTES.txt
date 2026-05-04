@@ -1,0 +1,26 @@
+Lighthouse {{ .Chart.AppVersion }} installed in namespace "{{ .Release.Namespace }}".
+
+Watch the agent register with the Console:
+  kubectl logs -n {{ .Release.Namespace }} -l app.kubernetes.io/instance={{ .Release.Name }} -f
+
+Verify the StatefulSet is healthy:
+  kubectl get sts -n {{ .Release.Namespace }} {{ include "lighthouse.fullname" . }}
+
+{{- if .Values.persistence.enabled }}
+
+The agent's offline buffer is persisted to a {{ .Values.persistence.size }}
+PersistentVolumeClaim. Inspect:
+  kubectl get pvc -n {{ .Release.Namespace }} -l app.kubernetes.io/instance={{ .Release.Name }}
+{{- else }}
+
+NOTE: persistence is disabled — buffered events are lost on pod restart.
+Re-enable with: --set persistence.enabled=true
+{{- end }}
+
+{{- if not .Values.existingSecret.name }}
+
+Token is stored in Secret {{ printf "%s-token" (include "lighthouse.fullname" .) | quote }}.
+For production, prefer an out-of-band secret (External Secrets, Sealed
+Secrets, Vault) and reference it via:
+  --set existingSecret.name=<your-secret> --set existingSecret.key=token
+{{- end }}
