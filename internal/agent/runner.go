@@ -359,7 +359,7 @@ func (r *Runner) Shutdown(ctx context.Context, reason string) error {
 func CheckDefsFromTransport(in []transport.CheckDef) []CheckDefinition {
 	out := make([]CheckDefinition, len(in))
 	for i, c := range in {
-		out[i] = CheckDefinition{
+		def := CheckDefinition{
 			ID:                 c.ID,
 			Type:               c.Type,
 			Name:               c.Name,
@@ -370,7 +370,16 @@ func CheckDefsFromTransport(in []transport.CheckDef) []CheckDefinition {
 			TimeoutSeconds:     c.TimeoutSeconds,
 			KeywordCheck:       c.KeywordCheck,
 			KeywordPresent:     c.KeywordPresent,
+			RequestBody:        c.RequestBody,
+			SkipTLSVerify:      c.SkipTLSVerify,
 		}
+		for _, h := range c.RequestHeaders {
+			def.RequestHeaders = append(def.RequestHeaders, HeaderPair{Key: h.Key, Value: h.Value})
+		}
+		for _, h := range c.ExpectedHeaders {
+			def.ExpectedHeaders = append(def.ExpectedHeaders, ExpectedHeader{Key: h.Key, Value: h.Value, Match: h.Match})
+		}
+		out[i] = def
 	}
 	return out
 }

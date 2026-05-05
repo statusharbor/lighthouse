@@ -28,20 +28,41 @@ type RegisterResponse struct {
 	Checks                   []CheckDef     `json:"checks"`
 }
 
+// HeaderPair is one custom request header the Console wants the agent to
+// add to outbound HTTP requests. JSON shape mirrors the Console's
+// `agentHeaderPair`.
+type HeaderPair struct {
+	Key   string `json:"key"`
+	Value string `json:"value"`
+}
+
+// ExpectedHeader is one response-header validation rule. Match is one of
+// "present" | "exact" | "contains"; when "present", Value is ignored. JSON
+// shape mirrors the Console's `agentExpectedHeader`.
+type ExpectedHeader struct {
+	Key   string `json:"key"`
+	Value string `json:"value"`
+	Match string `json:"match"`
+}
+
 // CheckDef is the agent-side view of a check definition. Mirrors the JSON
 // shape returned by the Console; not every field applies to every check
 // type (see Type).
 type CheckDef struct {
-	ID                 string `json:"id"`
-	Type               string `json:"type"`           // http | https | tcp | udp
-	Name               string `json:"name"`
-	URL                string `json:"url,omitempty"`
-	Method             string `json:"method,omitempty"`
-	ExpectedStatusCode int    `json:"expected_status_code,omitempty"`
-	IntervalSeconds    int    `json:"interval_seconds"`
-	TimeoutSeconds     int    `json:"timeout_seconds"`
-	KeywordCheck       string `json:"keyword_check,omitempty"`
-	KeywordPresent     bool   `json:"keyword_present,omitempty"`
+	ID                 string           `json:"id"`
+	Type               string           `json:"type"`           // http | https | tcp | udp
+	Name               string           `json:"name"`
+	URL                string           `json:"url,omitempty"`
+	Method             string           `json:"method,omitempty"`
+	ExpectedStatusCode int              `json:"expected_status_code,omitempty"`
+	IntervalSeconds    int              `json:"interval_seconds"`
+	TimeoutSeconds     int              `json:"timeout_seconds"`
+	KeywordCheck       string           `json:"keyword_check,omitempty"`
+	KeywordPresent     bool             `json:"keyword_present,omitempty"`
+	RequestHeaders     []HeaderPair     `json:"request_headers,omitempty"`
+	RequestBody        string           `json:"request_body,omitempty"`
+	ExpectedHeaders    []ExpectedHeader `json:"expected_headers,omitempty"`
+	SkipTLSVerify      bool             `json:"skip_tls_verify,omitempty"`
 }
 
 // HeartbeatInterval converts the response's seconds field to a Duration.

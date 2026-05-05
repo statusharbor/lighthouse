@@ -16,6 +16,22 @@ import (
 // executor — the URL scheme determines transport.
 type HTTPCheck struct{}
 
+// HeaderPair is one custom request header the agent should set on outbound
+// HTTP requests. Mirror of agent.HeaderPair / transport.HeaderPair (kept
+// local so the checks package has no upward dependencies).
+type HeaderPair struct {
+	Key   string
+	Value string
+}
+
+// ExpectedHeader is one response-header validation rule. Match is one of
+// "present" | "exact" | "contains". When "present", Value is ignored.
+type ExpectedHeader struct {
+	Key   string
+	Value string
+	Match string
+}
+
 // HTTPParams is what the executor needs from the agent's CheckDefinition.
 // Empty/zero fields take sensible defaults: Method=GET,
 // ExpectedStatusCode=200.
@@ -34,6 +50,19 @@ type HTTPParams struct {
 	// SkipTLSVerify: skip certificate validation. Off by default —
 	// production HTTPS checks should NOT skip verification.
 	SkipTLSVerify bool
+
+	// RequestHeaders are added (req.Header.Add) before the request is
+	// sent. The User-Agent header is always set first; user-supplied
+	// headers can override it via Add semantics.
+	RequestHeaders []HeaderPair
+
+	// RequestBody, when non-empty, becomes the body of the request
+	// regardless of method. Matches the public-monitor semantics.
+	RequestBody string
+
+	// ExpectedHeaders are validated against the response headers. Any
+	// rule mismatch flips the result to Down with a descriptive error.
+	ExpectedHeaders []ExpectedHeader
 
 	// ReadBodyLimit caps the bytes we'll pull off the wire for keyword
 	// matching. Defaults to 1 MB so a runaway response can't OOM the
@@ -63,7 +92,11 @@ func (HTTPCheck) Run(ctx context.Context, p HTTPParams) Result {
 		},
 	}
 
-	req, err := http.NewRequestWithContext(ctx, p.Method, p.URL, nil)
+	var bodyReader io.Reader
+	if p.RequestBody != "" {
+		bodyReader = strings.NewReader(p.RequestBody)
+	}
+	req, err := http.NewRequestWithContext(ctx, p.Method, p.URL, bodyReader)
 	if err != nil {
 		return Result{
 			Up:           false,
@@ -71,6 +104,12 @@ func (HTTPCheck) Run(ctx context.Context, p HTTPParams) Result {
 		}
 	}
 	req.Header.Set("User-Agent", "Lighthouse-Agent")
+	for _, h := range p.RequestHeaders {
+		if h.Key == "" {
+			continue
+		}
+		req.Header.Add(h.Key, h.Value)
+	}
 
 	start := time.Now()
 	resp, err := client.Do(req)
@@ -91,6 +130,45 @@ func (HTTPCheck) Run(ctx context.Context, p HTTPParams) Result {
 			ResponseTimeMs: msSince(start),
 			StatusCode:     resp.StatusCode,
 			ErrorMessage:   fmt.Sprintf("status %d, want %d", resp.StatusCode, p.ExpectedStatusCode),
+		}
+	}
+
+	for _, rule := range p.ExpectedHeaders {
+		if rule.Key == "" {
+			continue
+		}
+		actual := resp.Header.Get(rule.Key)
+		switch rule.Match {
+		case "present", "":
+			if actual == "" {
+				_, _ = io.CopyN(io.Discard, resp.Body, p.ReadBodyLimit)
+				return Result{
+					Up:             false,
+					ResponseTimeMs: msSince(start),
+					StatusCode:     resp.StatusCode,
+					ErrorMessage:   fmt.Sprintf("response missing header %q", rule.Key),
+				}
+			}
+		case "exact":
+			if actual != rule.Value {
+				_, _ = io.CopyN(io.Discard, resp.Body, p.ReadBodyLimit)
+				return Result{
+					Up:             false,
+					ResponseTimeMs: msSince(start),
+					StatusCode:     resp.StatusCode,
+					ErrorMessage:   fmt.Sprintf("header %q = %q, want exact %q", rule.Key, actual, rule.Value),
+				}
+			}
+		case "contains":
+			if !strings.Contains(actual, rule.Value) {
+				_, _ = io.CopyN(io.Discard, resp.Body, p.ReadBodyLimit)
+				return Result{
+					Up:             false,
+					ResponseTimeMs: msSince(start),
+					StatusCode:     resp.StatusCode,
+					ErrorMessage:   fmt.Sprintf("header %q = %q does not contain %q", rule.Key, actual, rule.Value),
+				}
+			}
 		}
 	}
 

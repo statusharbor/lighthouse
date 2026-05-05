@@ -5,11 +5,18 @@ import (
 	"errors"
 	"log/slog"
 	"math/rand"
+	"reflect"
 	"sync"
 	"time"
 
 	"github.com/statusharbor/lighthouse/internal/transport"
 )
+
+// supervisorTickInterval governs how often RunScheduler reconciles its
+// per-check goroutines against the runner's current Checks(). Exported as
+// a var (not const) so tests can shrink it without waiting 30s per
+// reconcile cycle.
+var supervisorTickInterval = 30 * time.Second
 
 // RunHeartbeat ticks SendHeartbeat at the given interval until ctx ends or
 // the Console returns 410 Gone. Returns ErrLighthouseGone in that case so
@@ -39,54 +46,80 @@ func (r *Runner) RunHeartbeat(ctx context.Context, interval time.Duration) error
 	}
 }
 
+// scheduledCheck is the supervisor's bookkeeping per running check.
+// Storing the def alongside the cancel lets the supervisor detect when a
+// check's configuration has changed (interval, URL, headers, etc.) and
+// restart the goroutine — without this, the per-check goroutine captures
+// the def by value at spawn time and ignores subsequent ApplyConfig
+// updates forever.
+type scheduledCheck struct {
+	cancel context.CancelFunc
+	def    CheckDefinition
+}
+
 // RunScheduler is the per-check scheduler loop. Each check gets its own
 // goroutine ticking at its interval_seconds, jittered within the first
 // minute to avoid thundering-herd at :00. Observations are submitted to
 // the worker pool so concurrency is capped at max_concurrent_checks.
 //
 // Skips check execution while the lighthouse is paused (heartbeats
-// continue regardless). Re-reads the check list every iteration so
-// config refresh from heartbeat takes effect on the next interval tick.
+// continue regardless). On every supervisorTickInterval the supervisor
+// reconciles the goroutine set against the runner's current Checks():
+//   - removed checks → goroutine cancelled
+//   - added checks → goroutine spawned
+//   - mutated checks (any field change) → goroutine restarted with the
+//     fresh def (otherwise the captured-by-value def stays stale)
 //
 // Returns when ctx ends; on shutdown the caller should already have
 // stopped accepting new work via context cancellation.
 func (r *Runner) RunScheduler(ctx context.Context) error {
 	pool := newWorkerPool(r.cfg.Agent.MaxConcurrentChecks)
 
-	// One goroutine per check. We restart this loop when the check set
-	// changes (etag rotation in heartbeat) — but the simplest correct
-	// implementation polls Checks() each iteration of the per-check
-	// timer. New checks get picked up on the next supervisor refresh
-	// (every 30s).
 	var wg sync.WaitGroup
-	scheduled := map[string]context.CancelFunc{}
-	supervisorTick := time.NewTicker(30 * time.Second)
+	scheduled := map[string]scheduledCheck{}
+	supervisorTick := time.NewTicker(supervisorTickInterval)
 	defer supervisorTick.Stop()
+
+	spawn := func(def CheckDefinition) {
+		subCtx, cancel := context.WithCancel(ctx)
+		scheduled[def.ID] = scheduledCheck{cancel: cancel, def: def}
+		wg.Add(1)
+		go func(d CheckDefinition) {
+			defer wg.Done()
+			r.runCheckLoop(subCtx, d, pool)
+		}(def)
+	}
 
 	refresh := func() {
 		want := map[string]CheckDefinition{}
 		for _, def := range r.Checks() {
 			want[def.ID] = def
 		}
-		// Cancel goroutines for checks that no longer exist.
-		for id, cancel := range scheduled {
-			if _, ok := want[id]; !ok {
-				cancel()
+		// Pass 1: cancel goroutines for checks that disappeared OR whose
+		// def changed. Restarted ones get respawned in pass 2.
+		for id, sc := range scheduled {
+			newDef, stillWanted := want[id]
+			if !stillWanted {
+				sc.cancel()
+				delete(scheduled, id)
+				continue
+			}
+			if !reflect.DeepEqual(sc.def, newDef) {
+				slog.Info("check definition changed; restarting goroutine",
+					"check_id", id,
+					"old_interval_s", sc.def.IntervalSeconds,
+					"new_interval_s", newDef.IntervalSeconds)
+				sc.cancel()
 				delete(scheduled, id)
 			}
 		}
-		// Spawn goroutines for new checks.
+		// Pass 2: spawn goroutines for new (or just-restarted) checks.
 		for id, def := range want {
 			if _, ok := scheduled[id]; ok {
 				continue
 			}
-			subCtx, cancel := context.WithCancel(ctx)
-			scheduled[id] = cancel
-			wg.Add(1)
-			go func(d CheckDefinition) {
-				defer wg.Done()
-				r.runCheckLoop(subCtx, d, pool)
-			}(def)
+			spawn(def)
+			_ = id
 		}
 	}
 	refresh()
@@ -94,8 +127,8 @@ func (r *Runner) RunScheduler(ctx context.Context) error {
 	for {
 		select {
 		case <-ctx.Done():
-			for _, cancel := range scheduled {
-				cancel()
+			for _, sc := range scheduled {
+				sc.cancel()
 			}
 			wg.Wait()
 			return nil

@@ -35,6 +35,23 @@ type CheckExecutor interface {
 	Run(ctx context.Context, def CheckDefinition) CheckObservation
 }
 
+// HeaderPair is one custom request header to add to outbound HTTP requests.
+// Mirror of transport.HeaderPair (kept local so the executor surface
+// doesn't pull in transport types).
+type HeaderPair struct {
+	Key   string
+	Value string
+}
+
+// ExpectedHeader is one response-header validation rule. Match is one of
+// "present" | "exact" | "contains"; when "present", Value is ignored.
+// Mirror of transport.ExpectedHeader.
+type ExpectedHeader struct {
+	Key   string
+	Value string
+	Match string
+}
+
 // CheckDefinition is the agent-internal view of a check. It mirrors the
 // transport-layer CheckDef but lives in the agent package so the executor
 // surface doesn't pull in transport types. The runner translates between
@@ -50,4 +67,8 @@ type CheckDefinition struct {
 	TimeoutSeconds     int
 	KeywordCheck       string
 	KeywordPresent     bool
+	RequestHeaders     []HeaderPair
+	RequestBody        string
+	ExpectedHeaders    []ExpectedHeader
+	SkipTLSVerify      bool
 }

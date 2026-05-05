@@ -27,6 +27,14 @@ func (e *realExecutor) Run(ctx context.Context, def agent.CheckDefinition) agent
 
 	switch strings.ToLower(def.Type) {
 	case "http", "https":
+		var rh []checks.HeaderPair
+		for _, h := range def.RequestHeaders {
+			rh = append(rh, checks.HeaderPair{Key: h.Key, Value: h.Value})
+		}
+		var eh []checks.ExpectedHeader
+		for _, h := range def.ExpectedHeaders {
+			eh = append(eh, checks.ExpectedHeader{Key: h.Key, Value: h.Value, Match: h.Match})
+		}
 		return toObservation(checks.HTTPCheck{}.Run(ctx, checks.HTTPParams{
 			URL:                def.URL,
 			Method:             def.Method,
@@ -34,6 +42,10 @@ func (e *realExecutor) Run(ctx context.Context, def agent.CheckDefinition) agent
 			ExpectedStatusCode: def.ExpectedStatusCode,
 			KeywordCheck:       def.KeywordCheck,
 			KeywordPresent:     def.KeywordPresent,
+			SkipTLSVerify:      def.SkipTLSVerify,
+			RequestHeaders:     rh,
+			RequestBody:        def.RequestBody,
+			ExpectedHeaders:    eh,
 		}))
 	case "tcp":
 		host, port, err := checks.ParseTCPTarget(def.URL, 0)
