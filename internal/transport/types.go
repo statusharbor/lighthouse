@@ -70,12 +70,16 @@ func (r *RegisterResponse) HeartbeatInterval() time.Duration {
 	return time.Duration(r.HeartbeatIntervalSeconds) * time.Second
 }
 
-// EventsRequest is what the agent posts to /api/lighthouse/v1/events. The
-// initial-sync dump (every restart) sets IsInitialSync=true; subsequent
-// transition batches set it false. Per design §3.2 / §4.3.
+// EventsRequest is what the agent posts to /api/lighthouse/v1/events.
+// SyncKind labels the batch:
+//   - ""          — ordinary state transitions (prev_state known)
+//   - "initial"   — agent boot, every check observed for the first time
+//   - "resync"    — server requested via request_full_resync=true
+//   - "new_check" — agent self-syncing checks added post-startup
+// Per design §3.2 / §4.3.
 type EventsRequest struct {
-	IsInitialSync bool         `json:"is_initial_sync"`
-	Events        []EventInput `json:"events"`
+	SyncKind string       `json:"sync_kind,omitempty"`
+	Events   []EventInput `json:"events"`
 }
 
 // EventInput is one state transition. PrevState is nil on initial-sync rows

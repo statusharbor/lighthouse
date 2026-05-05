@@ -110,8 +110,8 @@ func TestSendEvents_HappyPath(t *testing.T) {
 		if err := json.NewDecoder(r.Body).Decode(&got); err != nil {
 			t.Fatalf("decode: %v", err)
 		}
-		if !got.IsInitialSync {
-			t.Error("expected IsInitialSync=true")
+		if got.SyncKind != "initial" {
+			t.Errorf("expected SyncKind=initial, got %q", got.SyncKind)
 		}
 		if len(got.Events) != 2 {
 			t.Errorf("len(events) = %d, want 2", len(got.Events))
@@ -129,7 +129,7 @@ func TestSendEvents_HappyPath(t *testing.T) {
 
 	c := NewClient(srv.URL, "lh_test")
 	resp, err := c.SendEvents(context.Background(), EventsRequest{
-		IsInitialSync: true,
+		SyncKind: "initial",
 		Events: []EventInput{
 			{CheckID: "c1", NewState: "up"},
 			{CheckID: "c2", NewState: "down"},

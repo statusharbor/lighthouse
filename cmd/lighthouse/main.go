@@ -114,7 +114,7 @@ func main() {
 	)
 
 	// Initial sync (per design §7.3 step 3-4): one observation per check,
-	// posted as is_initial_sync=true.
+	// posted with sync_kind="initial".
 	syncCtx, syncCancel := context.WithTimeout(ctx, 60*time.Second)
 	if err := r.RunInitialSync(syncCtx, r.Checks()); err != nil {
 		slog.Warn("initial sync failed; will recover via subsequent heartbeats",

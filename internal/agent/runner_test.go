@@ -76,8 +76,8 @@ func TestRunInitialSync_OneEventPerCheck_PrevStateNil(t *testing.T) {
 		t.Fatalf("expected 1 batch posted, got %d", len(mock.eventBatches))
 	}
 	batch := mock.eventBatches[0]
-	if !batch.IsInitialSync {
-		t.Error("expected is_initial_sync=true")
+	if batch.SyncKind != "initial" {
+		t.Errorf("expected sync_kind=initial, got %q", batch.SyncKind)
 	}
 	if len(batch.Events) != 2 {
 		t.Fatalf("len(events) = %d, want 2", len(batch.Events))
@@ -302,8 +302,8 @@ func TestObserveAndEmit_EmitsTransitionWithPrevState(t *testing.T) {
 		t.Fatalf("expected 2 batches, got %d", len(mock.eventBatches))
 	}
 	transitionBatch := mock.eventBatches[1]
-	if transitionBatch.IsInitialSync {
-		t.Error("transition batch must have IsInitialSync=false")
+	if transitionBatch.SyncKind != "" {
+		t.Errorf("transition batch must have SyncKind=\"\", got %q", transitionBatch.SyncKind)
 	}
 	if len(transitionBatch.Events) != 1 {
 		t.Fatalf("len(events) = %d", len(transitionBatch.Events))
@@ -457,8 +457,8 @@ func TestSendHeartbeat_NewChecks_TriggerInitialSync(t *testing.T) {
 
 	batches := mock.EventBatches()
 	batch := batches[0]
-	if !batch.IsInitialSync {
-		t.Errorf("event batch is_initial_sync = false, want true")
+	if batch.SyncKind != "new_check" {
+		t.Errorf("event batch sync_kind = %q, want new_check", batch.SyncKind)
 	}
 	if len(batch.Events) != 1 || batch.Events[0].CheckID != "c-new" {
 		t.Errorf("event batch = %+v, want one event for c-new", batch.Events)
@@ -496,8 +496,8 @@ func TestSendHeartbeat_RequestFullResync_RunsForAllChecks(t *testing.T) {
 	}
 
 	batch := mock.EventBatches()[0]
-	if !batch.IsInitialSync {
-		t.Errorf("is_initial_sync = false, want true")
+	if batch.SyncKind != "resync" {
+		t.Errorf("sync_kind = %q, want resync", batch.SyncKind)
 	}
 	if len(batch.Events) != 2 {
 		t.Errorf("events = %d, want 2 (one per current check)", len(batch.Events))
@@ -596,8 +596,8 @@ func TestShutdown_FlushesBufferedEventsThenPostsShutdown(t *testing.T) {
 	// Flushed events should have been POSTed first.
 	if len(mock.eventBatches) != 1 {
 		t.Errorf("expected 1 events batch (the buffer flush), got %d", len(mock.eventBatches))
-	} else if mock.eventBatches[0].IsInitialSync {
-		t.Error("buffer flush must not be marked is_initial_sync")
+	} else if mock.eventBatches[0].SyncKind != "" {
+		t.Errorf("buffer flush must have empty SyncKind, got %q", mock.eventBatches[0].SyncKind)
 	}
 	// Then /shutdown.
 	if len(mock.shutdownCalls) != 1 {

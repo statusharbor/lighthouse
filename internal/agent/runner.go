@@ -98,13 +98,29 @@ func (r *Runner) SetEtag(etag string) {
 	r.etag = etag
 }
 
-// RunInitialSync performs one observation per check and POSTs them all as
-// a single initial-sync batch (per design §7.3 step 3-4 + §3.2
-// Interpretation B: prev_state=NULL on every row).
-//
-// Returns the committed state map so the scheduler can detect subsequent
-// transitions against it. The map is also stored on the Runner.
-func (r *Runner) RunInitialSync(ctx context.Context, defs []CheckDefinition) error {
+// SyncKind labels a sync batch sent to /events. Empty string is reserved
+// for ordinary state-transition batches (sent by ObserveAndEmit, not by
+// RunSync). Per design §3.2 Interpretation B + §4.3.
+type SyncKind string
+
+const (
+	// SyncKindInitial is the agent-startup batch — every check observed
+	// once.
+	SyncKindInitial SyncKind = "initial"
+	// SyncKindResync is the server-requested re-emit, fired when the
+	// heartbeat response sets request_full_resync=true.
+	SyncKindResync SyncKind = "resync"
+	// SyncKindNewCheck is the agent-driven sync for checks that arrived
+	// in a heartbeat response post-startup (initial sync only covers
+	// boot-time checks).
+	SyncKindNewCheck SyncKind = "new_check"
+)
+
+// RunSync performs one observation per check and POSTs them all as a
+// single batch tagged with the given SyncKind. Per design §3.2
+// Interpretation B: prev_state=NULL on every row, server applies "silent
+// on up, fire on down" semantics.
+func (r *Runner) RunSync(ctx context.Context, defs []CheckDefinition, kind SyncKind) error {
 	events := make([]transport.EventInput, 0, len(defs))
 	for _, def := range defs {
 		obs := r.executor.Run(ctx, def)
@@ -112,7 +128,7 @@ func (r *Runner) RunInitialSync(ctx context.Context, defs []CheckDefinition) err
 
 		ev := transport.EventInput{
 			CheckID:         def.ID,
-			PrevState:       nil, // initial-sync sentinel
+			PrevState:       nil, // sync sentinel — every kind has prev=NULL
 			NewState:        string(obs.State),
 			AgentObservedAt: orNow(obs.ObservedAt),
 		}
@@ -132,10 +148,17 @@ func (r *Runner) RunInitialSync(ctx context.Context, defs []CheckDefinition) err
 		return nil
 	}
 	_, err := r.client.SendEvents(ctx, transport.EventsRequest{
-		IsInitialSync: true,
-		Events:        events,
+		SyncKind: string(kind),
+		Events:   events,
 	})
 	return err
+}
+
+// RunInitialSync is the boot-time sync (calls RunSync with
+// SyncKindInitial). Kept as a named entry point because main.go reads
+// nicely with it.
+func (r *Runner) RunInitialSync(ctx context.Context, defs []CheckDefinition) error {
+	return r.RunSync(ctx, defs, SyncKindInitial)
 }
 
 // State returns a snapshot of the committed state map.
@@ -218,23 +241,23 @@ func (r *Runner) SendHeartbeat(ctx context.Context) (*transport.HeartbeatRespons
 	// have many checks and observations can take seconds.
 	if resp.RequestFullResync {
 		defs := r.Checks()
-		go r.runResync(ctx, defs, "request_full_resync")
+		go r.runResync(ctx, defs, SyncKindResync)
 	} else if len(added) > 0 {
-		go r.runResync(ctx, added, "new_checks")
+		go r.runResync(ctx, added, SyncKindNewCheck)
 	}
 	return resp, nil
 }
 
-// runResync runs an initial-sync batch for the given subset of checks.
-// Best-effort: failures log and drop. The next heartbeat (which sets
-// the resync flag again on the server when needed) will retry.
-func (r *Runner) runResync(ctx context.Context, defs []CheckDefinition, reason string) {
+// runResync runs a sync batch for the given subset of checks. Best-effort:
+// failures log and drop. The next heartbeat (which sets the resync flag
+// again on the server when needed) will retry.
+func (r *Runner) runResync(ctx context.Context, defs []CheckDefinition, kind SyncKind) {
 	if len(defs) == 0 {
 		return
 	}
-	if err := r.RunInitialSync(ctx, defs); err != nil {
+	if err := r.RunSync(ctx, defs, kind); err != nil {
 		slog.Warn("resync failed; will retry on next trigger",
-			"reason", reason, "checks", len(defs), "error", err)
+			"sync_kind", string(kind), "checks", len(defs), "error", err)
 	}
 }
 
@@ -291,8 +314,8 @@ func (r *Runner) ObserveAndEmit(ctx context.Context, def CheckDefinition) error 
 		ev.ErrorMessage = ptr(obs.ErrorMessage)
 	}
 	_, err := r.client.SendEvents(ctx, transport.EventsRequest{
-		IsInitialSync: false,
-		Events:        []transport.EventInput{ev},
+		// SyncKind="" — ordinary state transition.
+		Events: []transport.EventInput{ev},
 	})
 	return err
 }
@@ -343,8 +366,8 @@ func (r *Runner) Shutdown(ctx context.Context, reason string) error {
 			_ = err
 		} else if len(queued) > 0 {
 			_, _ = r.client.SendEvents(ctx, transport.EventsRequest{
-				IsInitialSync: false,
-				Events:        queued,
+				// SyncKind="" — buffered transitions, not a sync batch.
+				Events: queued,
 			})
 		}
 	}
