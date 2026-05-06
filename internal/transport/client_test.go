@@ -6,7 +6,6 @@ import (
 	"errors"
 	"net/http"
 	"net/http/httptest"
-	"strings"
 	"testing"
 )
 
@@ -74,21 +73,20 @@ func TestRegister_410ReturnsErrLighthouseGone(t *testing.T) {
 	}
 }
 
-func TestRegister_AuthFailureReturnsError(t *testing.T) {
+func TestRegister_401ReturnsErrLighthouseGone(t *testing.T) {
+	// Lighthouse delete cascades the bound api_token via FK, so the next
+	// agent call's bearer no longer resolves and the server returns 401
+	// (not 410). Treat 401 the same as 410 — the lighthouse is gone, the
+	// agent should exit cleanly. See status-harbor 7a18479 for the
+	// matching cascade-delete change.
 	srv := newMockServer(t, func(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, `{"error":"invalid token"}`, http.StatusUnauthorized)
 	})
 
 	c := NewClient(srv.URL, "wrong")
 	_, err := c.Register(context.Background(), RegisterRequest{AgentVersion: "0.1.0", AgentHostname: "h"})
-	if err == nil {
-		t.Fatal("expected error on 401")
-	}
-	if errors.Is(err, ErrLighthouseGone) {
-		t.Errorf("401 must NOT be ErrLighthouseGone; agent would silently exit instead of surfacing the auth issue")
-	}
-	if !strings.Contains(err.Error(), "401") {
-		t.Errorf("error should mention HTTP 401: %v", err)
+	if !errors.Is(err, ErrLighthouseGone) {
+		t.Errorf("expected ErrLighthouseGone on 401, got %v", err)
 	}
 }
 

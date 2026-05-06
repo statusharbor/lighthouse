@@ -20,9 +20,14 @@ type Client struct {
 	httpc   *http.Client
 }
 
-// ErrLighthouseGone signals that the Console returned 410 — the lighthouse
-// has been soft-deleted. The agent must exit cleanly. Per design §4.1.
-var ErrLighthouseGone = errors.New("lighthouse has been deleted (410 Gone)")
+// ErrLighthouseGone signals that the Console says this agent's lighthouse
+// no longer exists. Returned on:
+//   - 410 Gone — the legacy soft-delete contract.
+//   - 401 Unauthorized — the current hard-delete contract; deleting a
+//     lighthouse cascades the bound api_token via FK, so the next agent
+//     call's bearer no longer resolves.
+// The agent must exit cleanly in either case.
+var ErrLighthouseGone = errors.New("lighthouse has been deleted")
 
 // NewClient builds a Client. baseURL is the Console root — for production
 // this is `https://lighthouse.statusharbor.io`; tests pass an httptest URL.
@@ -101,7 +106,11 @@ func (c *Client) postJSON(ctx context.Context, path string, in any, out any, exp
 	}
 	defer func() { _ = resp.Body.Close() }()
 
-	if resp.StatusCode == http.StatusGone {
+	if resp.StatusCode == http.StatusGone || resp.StatusCode == http.StatusUnauthorized {
+		// 410: lighthouse soft-deleted (legacy contract).
+		// 401: lighthouse hard-deleted — the cascade dropped our api_token,
+		// so the next call's bearer no longer resolves. Either way the
+		// agent should stop running checks for a non-existent target.
 		return ErrLighthouseGone
 	}
 	if resp.StatusCode != expectedStatus {
