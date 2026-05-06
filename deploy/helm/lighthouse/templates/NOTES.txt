@@ -24,3 +24,8 @@ For production, prefer an out-of-band secret (External Secrets, Sealed
 Secrets, Vault) and reference it via:
   --set existingSecret.name=<your-secret> --set existingSecret.key=token
 {{- end }}
+
+When you remove this Lighthouse from the Console, the agent stops doing
+work but stays running (SIGTERM is the only thing that exits it under
+StatefulSet restartPolicy=Always). To remove the pod cleanly:
+  helm uninstall {{ .Release.Name }} -n {{ .Release.Namespace }}

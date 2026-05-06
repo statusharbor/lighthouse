@@ -57,6 +57,17 @@ func main() {
 		syscall.SIGINT, syscall.SIGTERM)
 	defer cancel()
 
+	// LIGHTHOUSE_IDLE_ON_GONE — when true, on receipt of a "lighthouse
+	// deleted" signal from the Console (401/410), the agent stops doing
+	// any work but does NOT exit. Set by the Helm chart, because k8s
+	// StatefulSet/Deployment pods are forced to restartPolicy=Always, so
+	// a clean exit-0 turns into CrashLoopBackOff. The operator removes
+	// the agent via `helm uninstall`; SIGTERM then lands and the agent
+	// exits gracefully via the normal shutdown path. systemd / launchd
+	// don't set this — they honour Restart=on-failure / KeepAlive
+	// SuccessfulExit=false and the exit-on-gone behaviour is correct.
+	idleOnGone := os.Getenv("LIGHTHOUSE_IDLE_ON_GONE") == "true"
+
 	// Health probes for Kubernetes (and anything else that wants
 	// /healthz/{live,ready}). Disabled when health_port is zero.
 	health := agent.NewHealthState(agent.DefaultHealthLivenessThreshold)
@@ -80,6 +91,11 @@ func main() {
 	registerCancel()
 	if err != nil {
 		if errors.Is(err, transport.ErrLighthouseGone) {
+			if idleOnGone {
+				slog.Info("lighthouse deleted on Console; idling until SIGTERM. Run `helm uninstall lighthouse` (or equivalent) to remove this pod.")
+				<-ctx.Done()
+				return
+			}
 			slog.Info("lighthouse deleted on Console; exiting cleanly")
 			return
 		}
@@ -122,15 +138,28 @@ func main() {
 	}
 	syncCancel()
 
-	// Long-running goroutines.
+	// Long-running goroutines. checksCtx is a child of ctx scoped to the
+	// active-monitoring lifecycle: the heartbeat goroutine cancels it
+	// (and only it) when the Console reports the lighthouse has been
+	// deleted, which stops the scheduler without taking down the main
+	// process. Whether the process then exits or idles is the
+	// idleOnGone branch below.
+	checksCtx, checksCancel := context.WithCancel(ctx)
+	defer checksCancel()
+
 	var wg sync.WaitGroup
 	wg.Add(2)
 	go func() {
 		defer wg.Done()
-		if err := r.RunHeartbeat(ctx, regResp.HeartbeatInterval()); err != nil {
+		if err := r.RunHeartbeat(checksCtx, regResp.HeartbeatInterval()); err != nil {
 			if errors.Is(err, transport.ErrLighthouseGone) {
+				if idleOnGone {
+					slog.Info("lighthouse deleted on Console; agent idling until SIGTERM. Run `helm uninstall lighthouse` (or equivalent) to remove this pod.")
+					checksCancel() // stop the scheduler goroutine, keep main alive
+					return
+				}
 				slog.Info("lighthouse deleted on Console; cancelling agent")
-				cancel() // bring down the scheduler goroutine
+				cancel() // bring down the scheduler goroutine and main
 				return
 			}
 			slog.Error("heartbeat loop terminated unexpectedly", "error", err)
@@ -138,7 +167,7 @@ func main() {
 	}()
 	go func() {
 		defer wg.Done()
-		if err := r.RunScheduler(ctx); err != nil {
+		if err := r.RunScheduler(checksCtx); err != nil && !errors.Is(err, context.Canceled) {
 			slog.Error("scheduler terminated unexpectedly", "error", err)
 		}
 	}()
