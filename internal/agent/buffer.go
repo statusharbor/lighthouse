@@ -97,6 +97,13 @@ func (b *EventBuffer) Append(events []transport.EventInput) error {
 // the maxAge window, returning them in append order (oldest-first).
 // Events older than maxAge are dropped silently — they're stale enough
 // that re-sending pollutes the timeline.
+//
+// Staleness is keyed on agent_observed_at (when the check actually ran),
+// not queued_at (when the event was last written to disk). Re-Append on
+// retry refreshes queued_at, which would let an arbitrarily old event
+// sneak through and surface as a current incident hours after the fact.
+// agent_observed_at is the truthful "this is when the world looked like
+// this" timestamp.
 func (b *EventBuffer) Drain() ([]transport.EventInput, error) {
 	b.mu.Lock()
 	defer b.mu.Unlock()
@@ -124,7 +131,7 @@ func (b *EventBuffer) Drain() ([]transport.EventInput, error) {
 			// Corrupted lines lose individually, not the whole buffer.
 			continue
 		}
-		if be.QueuedAt.Before(cutoff) {
+		if be.Event.AgentObservedAt.Before(cutoff) {
 			continue
 		}
 		out = append(out, be.Event)

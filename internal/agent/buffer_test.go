@@ -93,6 +93,37 @@ func TestBuffer_DropsEntriesOlderThanMaxAge(t *testing.T) {
 	}
 }
 
+// Regression: the staleness filter must look at agent_observed_at (when
+// the check actually ran), not queued_at (when the line was written).
+// Otherwise a retry that re-appends an old event refreshes queued_at and
+// the staleness filter never fires — and the agent ends up replaying an
+// hours-old "down" event after a long outage, which the server then
+// surfaces as a current incident.
+func TestBuffer_StalenessKeyedOnAgentObservedAt(t *testing.T) {
+	b := newBuffer(t)
+	b.maxAge = 100 * time.Millisecond
+
+	// Hand-craft an event whose agent_observed_at is well past the maxAge
+	// cutoff but whose queued_at is "now". This is the shape a re-append
+	// after a transient send failure would produce.
+	stale := transport.EventInput{
+		CheckID:         "stale",
+		NewState:        "down",
+		AgentObservedAt: time.Now().UTC().Add(-1 * time.Hour),
+	}
+	if err := b.Append([]transport.EventInput{stale}); err != nil {
+		t.Fatal(err)
+	}
+
+	got, err := b.Drain()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 0 {
+		t.Errorf("expected stale event to be dropped, got %d entries: %+v", len(got), got)
+	}
+}
+
 func TestBuffer_TrimsToByteCap(t *testing.T) {
 	b := newBuffer(t)
 	b.maxBytes = 256 // tiny cap to force trim
