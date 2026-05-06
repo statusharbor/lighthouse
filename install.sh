@@ -134,7 +134,10 @@ Wants=network-online.target
 [Service]
 Type=simple
 ExecStart=${INSTALL_DIR}/lighthouse -config ${CONFIG_PATH}
-Restart=always
+# Restart on crash, NOT on clean exit. The agent exits with 0 when the
+# Console says the lighthouse has been deleted (401/410); restart=always
+# would keep relaunching it into an immediate exit forever.
+Restart=on-failure
 RestartSec=5
 NoNewPrivileges=true
 ProtectSystem=strict
@@ -174,8 +177,17 @@ EOF
     </array>
     <key>RunAtLoad</key>
     <true/>
+    <!-- Keep alive on crash but NOT on clean exit. The agent exits with 0
+         when the Console says the lighthouse has been deleted; an
+         unconditional KeepAlive=true would relaunch it into an immediate
+         exit forever. -->
     <key>KeepAlive</key>
-    <true/>
+    <dict>
+        <key>SuccessfulExit</key>
+        <false/>
+        <key>Crashed</key>
+        <true/>
+    </dict>
     <key>StandardOutPath</key>
     <string>${log_dir}/lighthouse.log</string>
     <key>StandardErrorPath</key>
