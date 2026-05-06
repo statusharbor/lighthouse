@@ -1,0 +1,11 @@
+# Maps commit identities to a canonical author for `git shortlog`,
+# `git blame --line-porcelain` and GitHub's contributors graph.
+#
+# `Canonical Name <canonical@email> <commit@email>` reroutes every
+# commit (or co-author trailer) sent from `commit@email` to the
+# canonical identity, regardless of the original display name. Catches
+# every Claude variant (Opus 4.6, Opus 4.7, Sonnet 4.6, …) without
+# enumerating each one.
+
+Vyacheslav Pryimak <vyacheslavpryimak@gmail.com> <noreply@anthropic.com>
+Vyacheslav Pryimak <vyacheslavpryimak@gmail.com> Viacheslav Pryimak <vyacheslavpryimak@gmail.com>
