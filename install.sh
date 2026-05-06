@@ -149,12 +149,50 @@ EOF
             $sudo_cmd systemctl enable --now lighthouse.service
             note "systemd service started: systemctl status lighthouse"
         else
-            note "systemd not detected — start manually: ${INSTALL_DIR}/lighthouse -config ${CONFIG_PATH}"
+            note "systemd not detected — start manually as root: sudo ${INSTALL_DIR}/lighthouse -config ${CONFIG_PATH}"
+            note "(the config at ${CONFIG_PATH} is mode 0600 root:root because it carries the agent token)"
         fi
         ;;
     darwin)
-        note "macOS detected — start manually with: ${INSTALL_DIR}/lighthouse -config ${CONFIG_PATH}"
-        note "(launchd plist generation is not yet implemented; track in https://github.com/${REPO}/issues)"
+        plist_path="/Library/LaunchDaemons/io.statusharbor.lighthouse.plist"
+        log_dir="/var/log/lighthouse"
+        $sudo_cmd mkdir -p "$log_dir"
+        note "installing launchd daemon at $plist_path"
+        # shellcheck disable=SC2024
+        $sudo_cmd sh -c "cat > '$plist_path'" <<EOF
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>io.statusharbor.lighthouse</string>
+    <key>ProgramArguments</key>
+    <array>
+        <string>${INSTALL_DIR}/lighthouse</string>
+        <string>-config</string>
+        <string>${CONFIG_PATH}</string>
+    </array>
+    <key>RunAtLoad</key>
+    <true/>
+    <key>KeepAlive</key>
+    <true/>
+    <key>StandardOutPath</key>
+    <string>${log_dir}/lighthouse.log</string>
+    <key>StandardErrorPath</key>
+    <string>${log_dir}/lighthouse.err.log</string>
+    <key>WorkingDirectory</key>
+    <string>${DATA_DIR}</string>
+</dict>
+</plist>
+EOF
+        $sudo_cmd chmod 0644 "$plist_path"
+        $sudo_cmd chown root:wheel "$plist_path"
+        # bootout first in case a previous version is loaded; ignore the
+        # error when nothing is currently registered.
+        $sudo_cmd launchctl bootout system "$plist_path" 2>/dev/null || true
+        $sudo_cmd launchctl bootstrap system "$plist_path"
+        note "launchd daemon started: sudo launchctl print system/io.statusharbor.lighthouse"
+        note "logs: $log_dir/lighthouse.log"
         ;;
 esac
 
