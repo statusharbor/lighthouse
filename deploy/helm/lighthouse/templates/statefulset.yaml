@@ -43,14 +43,6 @@ spec:
                   {{- $secret := include "lighthouse.tokenSecret" . | fromYaml }}
                   name: {{ $secret.name }}
                   key: {{ $secret.key }}
-            # Idle (don't exit) when the Console reports the lighthouse
-            # has been deleted. k8s StatefulSet pods are forced to
-            # restartPolicy=Always — clean exit-0 turns into
-            # CrashLoopBackOff. The operator removes the agent via
-            # `helm uninstall`; SIGTERM lands and we shut down
-            # gracefully via the normal path.
-            - name: LIGHTHOUSE_IDLE_ON_GONE
-              value: "true"
             {{- with .Values.extraEnv }}
             {{- toYaml . | nindent 12 }}
             {{- end }}

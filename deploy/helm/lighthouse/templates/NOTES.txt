@@ -25,7 +25,9 @@ Secrets, Vault) and reference it via:
   --set existingSecret.name=<your-secret> --set existingSecret.key=token
 {{- end }}
 
-When you remove this Lighthouse from the Console, the agent stops doing
-work but stays running (SIGTERM is the only thing that exits it under
-StatefulSet restartPolicy=Always). To remove the pod cleanly:
+When you remove this Lighthouse from the Console, the agent exits and
+the pod enters CrashLoopBackOff (k8s forces restartPolicy=Always on
+StatefulSets, so the clean exit is treated as a crash). That's the
+intended signal — your monitoring stack should pick it up. To remove
+the pod cleanly:
   helm uninstall {{ .Release.Name }} -n {{ .Release.Namespace }}
