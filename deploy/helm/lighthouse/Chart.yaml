@@ -2,8 +2,8 @@ apiVersion: v2
 name: lighthouse
 description: Status Harbor Lighthouse — private network monitoring agent
 type: application
-version: 1.7.2
-appVersion: "1.7.2"
+version: 1.7.3
+appVersion: "1.7.3"
 home: https://statusharbor.com
 sources:
   - https://github.com/statusharbor/lighthouse
