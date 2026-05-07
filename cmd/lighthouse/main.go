@@ -18,6 +18,7 @@ import (
 	"time"
 
 	"github.com/statusharbor/lighthouse/internal/agent"
+	"github.com/statusharbor/lighthouse/internal/discovery"
 	"github.com/statusharbor/lighthouse/internal/transport"
 )
 
@@ -121,6 +122,40 @@ func main() {
 			"error", err)
 	}
 	syncCancel()
+
+	// Optional Kubernetes Ingress discovery. Enabled via the
+	// `discovery.enabled` config field (or LIGHTHOUSE_DISCOVERY_ENABLED
+	// env var). Outside a cluster the watcher returns nil and we skip
+	// it silently — the agent runs identically to before.
+	if cfg.Discovery.Enabled {
+		w, err := discovery.NewWatcher(cfg.Discovery.Namespaces)
+		switch {
+		case err != nil:
+			slog.Warn("discovery init failed; continuing without it", "error", err)
+		case w == nil:
+			slog.Info("discovery enabled but not running in a Kubernetes cluster; skipped")
+		default:
+			w.SendFunc = func(ctx context.Context, items []discovery.SnapshotItem) error {
+				wire := make([]transport.DiscoverySnapshotItem, len(items))
+				for i, it := range items {
+					wire[i] = transport.DiscoverySnapshotItem{
+						Namespace:   it.Namespace,
+						IngressName: it.IngressName,
+						Host:        it.Host,
+						Path:        it.Path,
+						Scheme:      it.Scheme,
+					}
+				}
+				_, err := client.SendDiscoveries(ctx, transport.DiscoverySnapshotRequest{
+					Snapshot: true,
+					Items:    wire,
+				})
+				return err
+			}
+			go w.Run(ctx)
+			slog.Info("discovery watcher started", "namespaces", cfg.Discovery.Namespaces)
+		}
+	}
 
 	// Long-running goroutines.
 	var wg sync.WaitGroup

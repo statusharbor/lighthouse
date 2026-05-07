@@ -78,6 +78,19 @@ func (c *Client) Heartbeat(ctx context.Context, req HeartbeatRequest) (*Heartbea
 	return &out, nil
 }
 
+// SendDiscoveries posts a snapshot of discovered Ingress endpoints.
+// Items are reconciled server-side per lighthouse: rows not in the
+// snapshot are deleted (or marked source_missing if adopted). The
+// caller treats errors as non-fatal — a missed snapshot just gets
+// resent on the next informer event or relist.
+func (c *Client) SendDiscoveries(ctx context.Context, req DiscoverySnapshotRequest) (*DiscoverySnapshotResponse, error) {
+	var out DiscoverySnapshotResponse
+	if err := c.postJSON(ctx, "/api/lighthouse/v1/discoveries", req, &out, http.StatusOK); err != nil {
+		return nil, err
+	}
+	return &out, nil
+}
+
 // Shutdown notifies the Console that the agent is exiting cleanly so the
 // offline watchdog skips it during the 60s grace window. Best-effort —
 // caller does not retry. Returns ErrLighthouseGone on 410 like the others.

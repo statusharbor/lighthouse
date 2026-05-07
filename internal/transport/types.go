@@ -135,3 +135,28 @@ type HeartbeatResponse struct {
 type ShutdownRequest struct {
 	Reason string `json:"reason"` // "sigterm", etc.
 }
+
+// DiscoverySnapshotItem is one entry in the agent's snapshot payload —
+// a host+path candidate gleaned from a Kubernetes Ingress resource.
+type DiscoverySnapshotItem struct {
+	Namespace   string `json:"namespace"`
+	IngressName string `json:"ingress_name"`
+	Host        string `json:"host"`
+	Path        string `json:"path"`
+	Scheme      string `json:"scheme"` // "http" or "https"
+}
+
+// DiscoverySnapshotRequest is what the agent posts to
+// /api/lighthouse/v1/discoveries. Snapshot=true means the items list
+// is authoritative for this lighthouse: server deletes (or marks
+// source_missing if adopted) any rows not in the set.
+type DiscoverySnapshotRequest struct {
+	Snapshot bool                    `json:"snapshot"`
+	Items    []DiscoverySnapshotItem `json:"items"`
+}
+
+// DiscoverySnapshotResponse is the server's ack with the count it
+// persisted.
+type DiscoverySnapshotResponse struct {
+	Count int `json:"count"`
+}

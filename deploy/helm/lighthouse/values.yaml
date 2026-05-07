@@ -47,6 +47,24 @@ agent:
   maxConcurrentChecks: 0   # default: 10
   logLevel: ""             # default: info  (set to "debug" for verbose logs)
 
+# Auto-discovery of monitor candidates from Kubernetes Ingress
+# resources. The agent watches the configured namespaces and pushes
+# host+path suggestions to the Console; users adopt them into real
+# monitors from the Lighthouse detail page.
+#
+# namespaces:
+#   - empty list or ["*"] ⇒ all-namespaces (chart installs a
+#     ClusterRole + ClusterRoleBinding bound to the agent's
+#     ServiceAccount).
+#   - ["a", "b"]          ⇒ scoped to those namespaces (per-namespace
+#     Role + RoleBinding for each).
+#
+# Opt-in. Disabled by default so the chart adds no cluster-scoped
+# permissions unless you ask for them.
+discovery:
+  enabled: false
+  namespaces: ["*"]
+
 serviceAccount:
   create: true
   name: ""

@@ -29,8 +29,21 @@ var ConsoleURL = "https://lighthouse.statusharbor.io"
 // Config is the on-disk configuration written by install.sh. Only `token`
 // is required.
 type Config struct {
-	Token string      `yaml:"token"`
-	Agent AgentConfig `yaml:"agent"`
+	Token     string          `yaml:"token"`
+	Agent     AgentConfig     `yaml:"agent"`
+	Discovery DiscoveryConfig `yaml:"discovery"`
+}
+
+// DiscoveryConfig governs the Kubernetes Ingress watcher. Discovery is
+// off unless Enabled is true. When enabled outside a cluster the
+// watcher silently no-ops — the agent doesn't error.
+//
+// Namespaces semantics:
+//   - empty list or ["*"] ⇒ all-namespaces (needs ClusterRole)
+//   - ["a", "b"]          ⇒ scoped to those namespaces (per-namespace Role)
+type DiscoveryConfig struct {
+	Enabled    bool     `yaml:"enabled"`
+	Namespaces []string `yaml:"namespaces"`
 }
 
 // AgentConfig contains operational tuning. Defaults are applied by Load when
@@ -56,9 +69,11 @@ const (
 // over the equivalent YAML field, so container/k8s deployments can set
 // these without mounting a config file.
 const (
-	EnvToken    = "LIGHTHOUSE_TOKEN"
-	EnvDataDir  = "LIGHTHOUSE_DATA_DIR"
-	EnvLogLevel = "LIGHTHOUSE_LOG_LEVEL"
+	EnvToken               = "LIGHTHOUSE_TOKEN"
+	EnvDataDir             = "LIGHTHOUSE_DATA_DIR"
+	EnvLogLevel            = "LIGHTHOUSE_LOG_LEVEL"
+	EnvDiscoveryEnabled    = "LIGHTHOUSE_DISCOVERY_ENABLED"
+	EnvDiscoveryNamespaces = "LIGHTHOUSE_DISCOVERY_NAMESPACES" // comma-separated; "*" allowed
 )
 
 // LoadFile reads a Config from the given YAML path. A missing file is not
@@ -100,6 +115,17 @@ func Load(r io.Reader) (*Config, error) {
 	}
 	if v := os.Getenv(EnvLogLevel); v != "" {
 		cfg.Agent.LogLevel = v
+	}
+	if v := os.Getenv(EnvDiscoveryEnabled); v != "" {
+		cfg.Discovery.Enabled = v == "true" || v == "1"
+	}
+	if v := os.Getenv(EnvDiscoveryNamespaces); v != "" {
+		cfg.Discovery.Namespaces = nil
+		for _, ns := range strings.Split(v, ",") {
+			if ns = strings.TrimSpace(ns); ns != "" {
+				cfg.Discovery.Namespaces = append(cfg.Discovery.Namespaces, ns)
+			}
+		}
 	}
 	if cfg.Token == "" {
 		return nil, fmt.Errorf("config: token is required (set in YAML or %s env)", EnvToken)

@@ -19,3 +19,11 @@ data:
       {{- with .Values.agent.logLevel }}
       log_level: {{ . | quote }}
       {{- end }}
+    {{- if .Values.discovery.enabled }}
+    discovery:
+      enabled: true
+      namespaces:
+        {{- range .Values.discovery.namespaces }}
+        - {{ . | quote }}
+        {{- end }}
+    {{- end }}

@@ -17,6 +17,17 @@ NOTE: persistence is disabled — buffered events are lost on pod restart.
 Re-enable with: --set persistence.enabled=true
 {{- end }}
 
+{{- if .Values.discovery.enabled }}
+
+Discovery is enabled — the agent will watch
+{{- if or (empty .Values.discovery.namespaces) (has "*" .Values.discovery.namespaces) }} all namespaces (cluster-scoped){{ else }} namespaces: {{ join ", " .Values.discovery.namespaces }}{{ end }}
+for Ingress resources and post suggestions to the Console. Browse,
+hide and adopt them on each Lighthouse's detail page.
+
+To scope down later:
+  --set discovery.namespaces='{prod,staging}'
+{{- end }}
+
 {{- if not .Values.existingSecret.name }}
 
 Token is stored in Secret {{ printf "%s-token" (include "lighthouse.fullname" .) | quote }}.
