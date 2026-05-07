@@ -24,8 +24,19 @@ Discovery is enabled — the agent will watch
 for Ingress resources and post suggestions to the Console. Browse,
 hide and adopt them on each Lighthouse's detail page.
 
-To scope down later:
-  --set discovery.namespaces='{prod,staging}'
+{{- if or (empty .Values.discovery.namespaces) (has "*" .Values.discovery.namespaces) }}
+
+Note: this install includes a ClusterRole + ClusterRoleBinding for
+ingress get/list/watch. To scope it down to specific namespaces:
+  --set 'discovery.namespaces={prod,staging}'
+To opt out entirely:
+  --set discovery.enabled=false
+{{- end }}
+{{- else }}
+
+Discovery is disabled. To turn it on later (lets the agent suggest
+ingress endpoints to monitor):
+  --set discovery.enabled=true
 {{- end }}
 
 {{- if not .Values.existingSecret.name }}

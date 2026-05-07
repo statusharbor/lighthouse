@@ -59,10 +59,14 @@ agent:
 #   - ["a", "b"]          ⇒ scoped to those namespaces (per-namespace
 #     Role + RoleBinding for each).
 #
-# Opt-in. Disabled by default so the chart adds no cluster-scoped
-# permissions unless you ask for them.
+# Enabled by default for the Helm install path — the whole point of
+# running Lighthouse on Kubernetes is to discover what's there.
+# Disable explicitly with --set discovery.enabled=false if you want
+# zero cluster-scoped RBAC, or scope it down with
+# --set 'discovery.namespaces={prod,staging}' to use per-namespace
+# Roles instead of a ClusterRole.
 discovery:
-  enabled: false
+  enabled: true
   namespaces: ["*"]
 
 serviceAccount:
