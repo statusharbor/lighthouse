@@ -203,6 +203,132 @@ func fromKubeIngress(ki ingressJSON) *Ingress {
 	return out
 }
 
+// ---- Services ----------------------------------------------------------
+
+type serviceList struct {
+	Metadata struct {
+		ResourceVersion string `json:"resourceVersion"`
+	} `json:"metadata"`
+	Items []serviceJSON `json:"items"`
+}
+
+type serviceJSON struct {
+	Metadata struct {
+		Namespace string `json:"namespace"`
+		Name      string `json:"name"`
+	} `json:"metadata"`
+	Spec struct {
+		Type      string `json:"type"`
+		ClusterIP string `json:"clusterIP"`
+		Ports     []struct {
+			Name     string `json:"name"`
+			Port     int    `json:"port"`
+			Protocol string `json:"protocol"`
+		} `json:"ports"`
+	} `json:"spec"`
+}
+
+func (k *kubeClient) serviceListURL(ns string) string {
+	if ns == "" {
+		return k.apiServer + "/api/v1/services"
+	}
+	return fmt.Sprintf("%s/api/v1/namespaces/%s/services",
+		k.apiServer, url.PathEscape(ns))
+}
+
+func (k *kubeClient) listServices(ctx context.Context, ns string) (*serviceList, error) {
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, k.serviceListURL(ns), nil)
+	if err != nil {
+		return nil, err
+	}
+	req.Header.Set("Authorization", "Bearer "+k.token)
+	req.Header.Set("Accept", "application/json")
+	resp, err := k.httpc.Do(req)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = resp.Body.Close() }()
+	if resp.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(resp.Body)
+		return nil, fmt.Errorf("list services: %s — %s", resp.Status, string(body))
+	}
+	var out serviceList
+	if err := json.NewDecoder(resp.Body).Decode(&out); err != nil {
+		return nil, fmt.Errorf("decode list: %w", err)
+	}
+	return &out, nil
+}
+
+type serviceWatchEvent struct {
+	Type   string      `json:"type"`
+	Object serviceJSON `json:"object"`
+}
+
+// watchServices mirrors watchIngresses but for the core/v1 services
+// endpoint.
+func (k *kubeClient) watchServices(ctx context.Context, ns, rv string, onEvent func()) error {
+	u := k.serviceListURL(ns) + "?watch=true&resourceVersion=" + url.QueryEscape(rv)
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, u, nil)
+	if err != nil {
+		return err
+	}
+	req.Header.Set("Authorization", "Bearer "+k.token)
+	req.Header.Set("Accept", "application/json")
+	hc := *k.httpc
+	hc.Timeout = 0
+	resp, err := hc.Do(req)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = resp.Body.Close() }()
+	if resp.StatusCode == http.StatusGone {
+		return errResourceVersionGone
+	}
+	if resp.StatusCode != http.StatusOK {
+		return fmt.Errorf("watch: %s", resp.Status)
+	}
+	dec := json.NewDecoder(resp.Body)
+	for {
+		var ev serviceWatchEvent
+		if err := dec.Decode(&ev); err != nil {
+			if errors.Is(err, io.EOF) || errors.Is(err, context.Canceled) {
+				return nil
+			}
+			return err
+		}
+		switch ev.Type {
+		case "ADDED", "MODIFIED", "DELETED":
+			onEvent()
+		case "ERROR":
+			return errResourceVersionGone
+		}
+	}
+}
+
+// fromKubeService projects the kube JSON onto a local Service.
+func fromKubeService(sj serviceJSON) *Service {
+	out := &Service{
+		Namespace: sj.Metadata.Namespace,
+		Name:      sj.Metadata.Name,
+		Type:      sj.Spec.Type,
+		Headless:  sj.Spec.ClusterIP == "None",
+	}
+	for _, p := range sj.Spec.Ports {
+		proto := p.Protocol
+		if proto == "" {
+			proto = "TCP" // kube default
+		}
+		out.Ports = append(out.Ports, ServicePort{
+			Name:     p.Name,
+			Port:     p.Port,
+			Protocol: proto,
+		})
+	}
+	return out
+}
+
+// ---- Common ------------------------------------------------------------
+
 // minBackoff sleeps a small amount on watch failure, scaling up to
 // avoid hot-looping against a broken kube API. Returns immediately
 // when ctx is cancelled.

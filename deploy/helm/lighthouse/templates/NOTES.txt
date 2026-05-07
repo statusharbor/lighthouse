@@ -21,8 +21,10 @@ Re-enable with: --set persistence.enabled=true
 
 Discovery is enabled — the agent will watch
 {{- if or (empty .Values.discovery.namespaces) (has "*" .Values.discovery.namespaces) }} all namespaces (cluster-scoped){{ else }} namespaces: {{ join ", " .Values.discovery.namespaces }}{{ end }}
-for Ingress resources and post suggestions to the Console. Browse,
-hide and adopt them on each Lighthouse's detail page.
+for Ingress + Service resources and post suggestions to the Console.
+Externally-facing services (LoadBalancer, NodePort) surface
+alongside Ingresses; ClusterIP and headless services are skipped.
+Browse, hide and adopt them on each Lighthouse's detail page.
 
 {{- if or (empty .Values.discovery.namespaces) (has "*" .Values.discovery.namespaces) }}
 

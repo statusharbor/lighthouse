@@ -136,14 +136,17 @@ type ShutdownRequest struct {
 	Reason string `json:"reason"` // "sigterm", etc.
 }
 
-// DiscoverySnapshotItem is one entry in the agent's snapshot payload —
-// a host+path candidate gleaned from a Kubernetes Ingress resource.
+// DiscoverySnapshotItem is one entry in the agent's snapshot payload.
+// Covers both Ingress and Service resources; `Kind` is the
+// discriminator. Path is meaningful for ingresses, Port for services.
 type DiscoverySnapshotItem struct {
-	Namespace   string `json:"namespace"`
-	IngressName string `json:"ingress_name"`
-	Host        string `json:"host"`
-	Path        string `json:"path"`
-	Scheme      string `json:"scheme"` // "http" or "https"
+	Kind         string `json:"kind"` // "ingress" | "service"
+	Namespace    string `json:"namespace"`
+	ResourceName string `json:"resource_name"`
+	Host         string `json:"host"`
+	Path         string `json:"path,omitempty"`
+	Port         int    `json:"port,omitempty"`
+	Protocol     string `json:"protocol"` // http|https|tcp|udp
 }
 
 // DiscoverySnapshotRequest is what the agent posts to

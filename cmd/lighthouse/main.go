@@ -139,11 +139,13 @@ func main() {
 				wire := make([]transport.DiscoverySnapshotItem, len(items))
 				for i, it := range items {
 					wire[i] = transport.DiscoverySnapshotItem{
-						Namespace:   it.Namespace,
-						IngressName: it.IngressName,
-						Host:        it.Host,
-						Path:        it.Path,
-						Scheme:      it.Scheme,
+						Kind:         it.Kind,
+						Namespace:    it.Namespace,
+						ResourceName: it.ResourceName,
+						Host:         it.Host,
+						Path:         it.Path,
+						Port:         it.Port,
+						Protocol:     it.Protocol,
 					}
 				}
 				_, err := client.SendDiscoveries(ctx, transport.DiscoverySnapshotRequest{

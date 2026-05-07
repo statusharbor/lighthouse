@@ -7,9 +7,11 @@ import (
 	"time"
 )
 
-// Watcher owns the kube-API watch loop and the snapshot push cadence.
+// Watcher owns the kube-API watch loops (one per resource kind ×
+// namespace) and the snapshot push cadence.
+//
 // Lifecycle:
-//   1. List+watch each configured namespace (or all-namespaces).
+//   1. List+watch each (kind × namespace) pair.
 //   2. On every watch event, set a dirty flag.
 //   3. A debounced ticker collects bursts and calls SendFunc with the
 //      current snapshot. No periodic resync — the watch's own
@@ -23,19 +25,17 @@ type Watcher struct {
 	namespaces []string // empty / ["*"] ⇒ all namespaces
 	debounce   time.Duration
 
-	// SendFunc is invoked with each fresh snapshot. It must not block
-	// for long — a 30s context is provided by Run. Errors are logged
-	// and ignored; the next event will retry.
+	// SendFunc is invoked with each fresh snapshot.
 	SendFunc func(ctx context.Context, items []SnapshotItem) error
 
-	mu         sync.Mutex
-	state      map[string]*Ingress // key = namespace/name
-	lastSent   []SnapshotItem
+	mu        sync.Mutex
+	ingresses map[string]*Ingress // key = namespace/name
+	services  map[string]*Service // key = namespace/name
+	lastSent  []SnapshotItem
 }
 
 // NewWatcher constructs a Watcher when running in-cluster. Returns
-// (nil, nil) when not in a cluster — the caller treats that as
-// "discovery disabled".
+// (nil, nil) when not in a cluster.
 func NewWatcher(namespaces []string) (*Watcher, error) {
 	k, err := inClusterClient()
 	if err != nil {
@@ -51,12 +51,13 @@ func NewWatcher(namespaces []string) (*Watcher, error) {
 		kube:       k,
 		namespaces: namespaces,
 		debounce:   2 * time.Second,
-		state:      map[string]*Ingress{},
+		ingresses:  map[string]*Ingress{},
+		services:   map[string]*Service{},
 	}, nil
 }
 
 // Run blocks until ctx is cancelled. Spawns one watch goroutine per
-// namespace plus a debounced sender goroutine.
+// (kind × namespace) plus a debounced sender goroutine.
 func (w *Watcher) Run(ctx context.Context) {
 	dirty := make(chan struct{}, 1)
 	notify := func() {
@@ -72,10 +73,14 @@ func (w *Watcher) Run(ctx context.Context) {
 		if ns != "*" {
 			nsArg = ns
 		}
-		wg.Add(1)
+		wg.Add(2)
 		go func(ns string) {
 			defer wg.Done()
-			w.watchLoop(ctx, ns, notify)
+			w.ingressWatchLoop(ctx, ns, notify)
+		}(nsArg)
+		go func(ns string) {
+			defer wg.Done()
+			w.serviceWatchLoop(ctx, ns, notify)
 		}(nsArg)
 	}
 
@@ -88,48 +93,88 @@ func (w *Watcher) Run(ctx context.Context) {
 	wg.Wait()
 }
 
-// watchLoop runs the list+watch+relist cycle for one namespace.
-func (w *Watcher) watchLoop(ctx context.Context, ns string, notify func()) {
+func (w *Watcher) ingressWatchLoop(ctx context.Context, ns string, notify func()) {
 	attempt := 0
 	for ctx.Err() == nil {
 		list, err := w.kube.listIngresses(ctx, ns)
 		if err != nil {
-			slog.Warn("kube list failed; will retry", "namespace", ns, "error", err)
+			slog.Warn("kube list ingresses failed; will retry", "namespace", ns, "error", err)
 			attempt++
 			minBackoff(ctx, attempt)
 			continue
 		}
 		attempt = 0
-		w.replaceNamespace(ns, list.Items)
+		w.replaceIngresses(ns, list.Items)
 		notify()
 
 		if err := w.kube.watchIngresses(ctx, ns, list.Metadata.ResourceVersion, notify); err != nil {
 			if ctx.Err() != nil {
 				return
 			}
-			slog.Debug("kube watch ended; relisting", "namespace", ns, "error", err)
+			slog.Debug("kube ingress watch ended; relisting", "namespace", ns, "error", err)
 		}
 	}
 }
 
-// replaceNamespace swaps the cached state for one namespace with the
-// freshly-listed set. ns="" means all-namespaces; in that case we
-// clear the whole state and rebuild.
-func (w *Watcher) replaceNamespace(ns string, items []ingressJSON) {
+func (w *Watcher) serviceWatchLoop(ctx context.Context, ns string, notify func()) {
+	attempt := 0
+	for ctx.Err() == nil {
+		list, err := w.kube.listServices(ctx, ns)
+		if err != nil {
+			slog.Warn("kube list services failed; will retry", "namespace", ns, "error", err)
+			attempt++
+			minBackoff(ctx, attempt)
+			continue
+		}
+		attempt = 0
+		w.replaceServices(ns, list.Items)
+		notify()
+
+		if err := w.kube.watchServices(ctx, ns, list.Metadata.ResourceVersion, notify); err != nil {
+			if ctx.Err() != nil {
+				return
+			}
+			slog.Debug("kube service watch ended; relisting", "namespace", ns, "error", err)
+		}
+	}
+}
+
+// replaceIngresses swaps the cached Ingress state for one namespace
+// (or all-namespaces when ns == "") with the freshly-listed set.
+func (w *Watcher) replaceIngresses(ns string, items []ingressJSON) {
 	w.mu.Lock()
 	defer w.mu.Unlock()
 	if ns == "" {
-		w.state = make(map[string]*Ingress, len(items))
+		w.ingresses = make(map[string]*Ingress, len(items))
 	} else {
-		for k, v := range w.state {
+		for k, v := range w.ingresses {
 			if v.Namespace == ns {
-				delete(w.state, k)
+				delete(w.ingresses, k)
 			}
 		}
 	}
 	for _, it := range items {
 		ing := fromKubeIngress(it)
-		w.state[ing.Namespace+"/"+ing.Name] = ing
+		w.ingresses[ing.Namespace+"/"+ing.Name] = ing
+	}
+}
+
+// replaceServices swaps the cached Service state for one namespace.
+func (w *Watcher) replaceServices(ns string, items []serviceJSON) {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	if ns == "" {
+		w.services = make(map[string]*Service, len(items))
+	} else {
+		for k, v := range w.services {
+			if v.Namespace == ns {
+				delete(w.services, k)
+			}
+		}
+	}
+	for _, it := range items {
+		svc := fromKubeService(it)
+		w.services[svc.Namespace+"/"+svc.Name] = svc
 	}
 }
 
@@ -145,7 +190,6 @@ func (w *Watcher) senderLoop(ctx context.Context, dirty <-chan struct{}) {
 			return
 		case <-dirty:
 		}
-		// Debounce: keep collecting events for `debounce` window.
 		t := time.NewTimer(w.debounce)
 		drain := true
 		for drain {
@@ -154,7 +198,6 @@ func (w *Watcher) senderLoop(ctx context.Context, dirty <-chan struct{}) {
 				t.Stop()
 				return
 			case <-dirty:
-				// reset timer
 				if !t.Stop() {
 					<-t.C
 				}
@@ -165,7 +208,7 @@ func (w *Watcher) senderLoop(ctx context.Context, dirty <-chan struct{}) {
 		}
 
 		w.mu.Lock()
-		snap := BuildSnapshot(w.state)
+		snap := BuildSnapshot(w.ingresses, w.services)
 		same := SnapshotsEqual(snap, w.lastSent)
 		if !same {
 			w.lastSent = snap
@@ -179,12 +222,11 @@ func (w *Watcher) senderLoop(ctx context.Context, dirty <-chan struct{}) {
 		if err := w.SendFunc(sendCtx, snap); err != nil {
 			slog.Warn("discovery send failed; will retry on next change",
 				"items", len(snap), "error", err)
-			// Force the next event to retry by clearing lastSent.
 			w.mu.Lock()
 			w.lastSent = nil
 			w.mu.Unlock()
 		} else {
-			slog.Debug("discovery snapshot sent", "items", len(snap))
+			slog.Info("discovery snapshot sent", "items", len(snap))
 		}
 		cancel()
 	}
