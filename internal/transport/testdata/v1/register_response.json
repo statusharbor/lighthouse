@@ -1,0 +1,21 @@
+{
+  "lighthouse_id": "7eebc923-44bc-4d10-a856-cd62330bc441",
+  "name": "raspberry",
+  "host": "lighthouse-0",
+  "paused": false,
+  "heartbeat_interval_seconds": 20,
+  "flap_protection_threshold": 1,
+  "config_etag": "etag-abc123",
+  "checks": [
+    {
+      "id": "5d56d803-e26e-4d21-9c38-5c89d3014562",
+      "type": "http",
+      "name": "internal-api",
+      "url": "https://api.internal/healthz",
+      "method": "GET",
+      "expected_status_code": 200,
+      "interval_seconds": 60,
+      "timeout_seconds": 10
+    }
+  ]
+}

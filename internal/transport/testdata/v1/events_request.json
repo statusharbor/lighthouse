@@ -1,0 +1,14 @@
+{
+  "sync_kind": "initial",
+  "events": [
+    {
+      "check_id": "5d56d803-e26e-4d21-9c38-5c89d3014562",
+      "prev_state": null,
+      "new_state": "up",
+      "response_time_ms": 87,
+      "status_code": 200,
+      "error_message": null,
+      "agent_observed_at": "2026-05-07T17:15:54Z"
+    }
+  ]
+}

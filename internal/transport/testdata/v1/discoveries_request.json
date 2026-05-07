@@ -1,0 +1,21 @@
+{
+  "snapshot": true,
+  "items": [
+    {
+      "kind": "ingress",
+      "namespace": "default",
+      "resource_name": "web",
+      "host": "app.example.com",
+      "path": "/",
+      "protocol": "https"
+    },
+    {
+      "kind": "service",
+      "namespace": "prod",
+      "resource_name": "postgres",
+      "host": "postgres.prod.svc.cluster.local",
+      "port": 5432,
+      "protocol": "tcp"
+    }
+  ]
+}

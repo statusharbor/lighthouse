@@ -1,0 +1,6 @@
+{
+  "config_etag": "etag-abc123",
+  "paused": false,
+  "flap_protection_threshold": 1,
+  "request_full_resync": false
+}

@@ -1,0 +1,10 @@
+{
+  "agent_version": "1.10.0",
+  "config_etag": "etag-abc123",
+  "check_latencies": {
+    "5d56d803-e26e-4d21-9c38-5c89d3014562": {
+      "last_observed_latency_ms": 87,
+      "last_observed_at": "2026-05-07T17:15:54Z"
+    }
+  }
+}
