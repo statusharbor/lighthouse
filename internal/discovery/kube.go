@@ -114,7 +114,7 @@ func (k *kubeClient) listIngresses(ctx context.Context, ns string) (*ingressList
 	if err != nil {
 		return nil, err
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	if resp.StatusCode != http.StatusOK {
 		body, _ := io.ReadAll(resp.Body)
 		return nil, fmt.Errorf("list ingresses: %s — %s", resp.Status, string(body))
@@ -154,7 +154,7 @@ func (k *kubeClient) watchIngresses(ctx context.Context, ns, rv string, onEvent 
 	if err != nil {
 		return err
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	if resp.StatusCode == http.StatusGone {
 		return errResourceVersionGone
 	}
