@@ -100,8 +100,15 @@ spec:
   volumeClaimTemplates:
     - metadata:
         name: data
+        # Selector labels only — they're constant across chart versions
+        # (name + instance, both derived from values that don't change on
+        # upgrade). The full label set includes helm.sh/chart=<name>-<ver>
+        # which IS version-dependent, and the PVC template metadata is
+        # immutable on an existing StatefulSet, so using full labels here
+        # makes every chart-version bump fail with "Forbidden: updates to
+        # statefulset spec for fields other than ... are forbidden".
         labels:
-          {{- include "lighthouse.labels" . | nindent 10 }}
+          {{- include "lighthouse.selectorLabels" . | nindent 10 }}
       spec:
         accessModes: [{{ .Values.persistence.accessMode | quote }}]
         {{- with .Values.persistence.storageClass }}
