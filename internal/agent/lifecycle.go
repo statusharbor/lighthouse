@@ -18,6 +18,15 @@ import (
 // reconcile cycle.
 var supervisorTickInterval = 30 * time.Second
 
+// minCheckIntervalFloor clamps the per-check tick interval to a sane
+// minimum on the agent side. The Console enforces a 5s floor on
+// create/update of lighthouse-bound monitors, so in normal operation
+// the agent never sees a smaller value — but a misconfigured DB row
+// or a future server bug shouldn't be able to make the agent pound
+// the target every fraction of a second. var (not const) so tests
+// can override.
+var minCheckIntervalFloor = 5 * time.Second
+
 // RunHeartbeat ticks SendHeartbeat at the given interval until ctx ends or
 // the Console returns 410 Gone. Returns ErrLighthouseGone in that case so
 // main can exit(0). Per design §4.2 there is no retry — a failed heartbeat
@@ -138,14 +147,34 @@ func (r *Runner) RunScheduler(ctx context.Context) error {
 	}
 }
 
+// resolveCheckInterval turns a CheckDefinition's IntervalSeconds into
+// the actual ticker interval, applying:
+//   - a 60s fallback when the value is missing/zero, and
+//   - a floor (minCheckIntervalFloor) so a misconfigured server can't
+//     make the agent hammer the target.
+//
+// Logs a warning when clamping fires so anyone debugging unexpectedly
+// slow checks can see the cause.
+func resolveCheckInterval(checkID string, intervalSeconds int) time.Duration {
+	interval := time.Duration(intervalSeconds) * time.Second
+	if interval <= 0 {
+		return 60 * time.Second
+	}
+	if interval < minCheckIntervalFloor {
+		slog.Warn("check interval below floor; clamping",
+			"check_id", checkID,
+			"requested_s", intervalSeconds,
+			"floor_s", int(minCheckIntervalFloor.Seconds()))
+		return minCheckIntervalFloor
+	}
+	return interval
+}
+
 // runCheckLoop is one goroutine per check. Sleeps a small random jitter
 // up front to spread tick boundaries across checks, then ticks at the
 // check's interval. Skips while paused.
 func (r *Runner) runCheckLoop(ctx context.Context, def CheckDefinition, pool *workerPool) {
-	interval := time.Duration(def.IntervalSeconds) * time.Second
-	if interval <= 0 {
-		interval = 60 * time.Second
-	}
+	interval := resolveCheckInterval(def.ID, def.IntervalSeconds)
 	// Jitter the first tick to avoid stampedes when many checks share an
 	// interval. Bounded by interval/4 so we don't delay observably.
 	maxJitter := interval / 4

@@ -79,6 +79,13 @@ func TestRunHeartbeat_TransientErrorsAreSwallowed(t *testing.T) {
 }
 
 func TestRunScheduler_ExecutesEachCheckPeriodically(t *testing.T) {
+	// The scheduler clamps intervals to minCheckIntervalFloor (5s in
+	// production); shrink it here so the test can use a 1s tick without
+	// waiting for the floor.
+	prevFloor := minCheckIntervalFloor
+	minCheckIntervalFloor = 100 * time.Millisecond
+	t.Cleanup(func() { minCheckIntervalFloor = prevFloor })
+
 	var eventCount atomic.Int32
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
@@ -160,6 +167,10 @@ func TestRunScheduler_RestartsGoroutineOnDefinitionChange(t *testing.T) {
 	supervisorTickInterval = 25 * time.Millisecond
 	t.Cleanup(func() { supervisorTickInterval = prevTick })
 
+	prevFloor := minCheckIntervalFloor
+	minCheckIntervalFloor = 100 * time.Millisecond
+	t.Cleanup(func() { minCheckIntervalFloor = prevFloor })
+
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path == "/api/lighthouse/v1/events" {
 			w.WriteHeader(http.StatusAccepted)
@@ -218,4 +229,36 @@ func TestRunScheduler_RestartsGoroutineOnDefinitionChange(t *testing.T) {
 
 	cancel()
 	<-done
+}
+
+// Defense-in-depth: even if a misconfigured server (or hand-crafted DB
+// row) sends an interval below the floor, the agent must clamp instead
+// of pounding the target every fraction of a second. Resolution lives
+// in resolveCheckInterval (called once per goroutine spawn in
+// runCheckLoop); test the helper directly so the assertion isn't tied
+// to wall-clock ticker timing.
+func TestResolveCheckInterval(t *testing.T) {
+	prevFloor := minCheckIntervalFloor
+	minCheckIntervalFloor = 5 * time.Second
+	t.Cleanup(func() { minCheckIntervalFloor = prevFloor })
+
+	cases := []struct {
+		name     string
+		input    int
+		want     time.Duration
+	}{
+		{"zero falls back to 60s", 0, 60 * time.Second},
+		{"negative falls back to 60s", -3, 60 * time.Second},
+		{"below floor clamps to floor", 1, 5 * time.Second},
+		{"floor passes through", 5, 5 * time.Second},
+		{"above floor passes through", 30, 30 * time.Second},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got := resolveCheckInterval("c1", tc.input)
+			if got != tc.want {
+				t.Errorf("resolveCheckInterval(%d) = %v, want %v", tc.input, got, tc.want)
+			}
+		})
+	}
 }
