@@ -22,7 +22,7 @@ func newRealExecutor() *realExecutor { return &realExecutor{} }
 func (e *realExecutor) Run(ctx context.Context, def agent.CheckDefinition) agent.CheckObservation {
 	timeout := time.Duration(def.TimeoutSeconds) * time.Second
 	if timeout <= 0 {
-		timeout = 30 * time.Second
+		timeout = 5 * time.Second
 	}
 
 	switch strings.ToLower(def.Type) {
