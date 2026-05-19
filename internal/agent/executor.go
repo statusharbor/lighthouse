@@ -23,6 +23,10 @@ type CheckObservation struct {
 	StatusCode     int    // HTTP status code, 0 for non-HTTP checks
 	ErrorMessage   string // empty on success
 	ObservedAt     time.Time
+	// CertDaysToExpiry is set only by the SSL check, whenever a leaf
+	// certificate was read (valid OR expired). nil for every other check
+	// type. The heartbeat rolls these up into the cert_expiry map.
+	CertDaysToExpiry *int
 }
 
 // CheckExecutor is the agent's abstraction over check types — the real
@@ -71,4 +75,10 @@ type CheckDefinition struct {
 	RequestBody        string
 	ExpectedHeaders    []ExpectedHeader
 	SkipTLSVerify      bool
+	// DNS-only fields. DNSRecordType defaults to "A" when empty;
+	// DNSExpectedIPs are the expected resolved value(s); DNSResolver is an
+	// optional explicit resolver `host` or `host:port` (default port 53).
+	DNSRecordType  string
+	DNSExpectedIPs []string
+	DNSResolver    string
 }

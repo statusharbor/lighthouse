@@ -215,7 +215,7 @@ func TestSendHeartbeat_IncludesEtagAndDrainsLatencies(t *testing.T) {
 	client := transport.NewClient(mock.URL, "lh_test")
 	r := NewRunner(&Config{Token: "lh_test"}, client, &fakeExecutor{})
 	r.SetEtag("old-etag")
-	r.recordLatency("c1", 42, time.Time{})
+	r.latency.record("c1", transport.LatencyEntry{LastObservedLatencyMs: 42})
 
 	resp, err := r.SendHeartbeat(context.Background())
 	if err != nil {
@@ -334,7 +334,7 @@ func TestObserveAndEmit_RecordsLatencyEvenWithoutTransition(t *testing.T) {
 	if err := r.ObserveAndEmit(context.Background(), CheckDefinition{ID: "c1"}); err != nil {
 		t.Fatal(err)
 	}
-	if got := r.latencies["c1"].LastObservedLatencyMs; got != 99 {
+	if got := r.latency.drain()["c1"].LastObservedLatencyMs; got != 99 {
 		t.Errorf("latency not recorded: got %d", got)
 	}
 }
@@ -644,9 +644,23 @@ func TestShutdown_BestEffort_NetworkErrorDoesNotPropagate(t *testing.T) {
 func TestCheckDefsFromTransport(t *testing.T) {
 	in := []transport.CheckDef{
 		{ID: "x", Type: "http", URL: "https://e.com", IntervalSeconds: 60, TimeoutSeconds: 10},
+		{ID: "d", Type: "dns", URL: "api.internal", IntervalSeconds: 300, TimeoutSeconds: 5,
+			DNSRecordType: "A", DNSExpectedIPs: []string{"10.0.0.5"}, DNSResolver: "10.0.0.10:53"},
 	}
 	out := CheckDefsFromTransport(in)
-	if len(out) != 1 || out[0].URL != "https://e.com" || out[0].IntervalSeconds != 60 {
-		t.Errorf("translation failed: %+v", out)
+	if len(out) != 2 {
+		t.Fatalf("translation failed: %+v", out)
+	}
+	if out[0].URL != "https://e.com" || out[0].IntervalSeconds != 60 {
+		t.Errorf("http def translation failed: %+v", out[0])
+	}
+	// The DNS-only fields must survive the transport → agent translation —
+	// otherwise the agent receives a DNS check it cannot actually run.
+	dns := out[1]
+	if dns.DNSRecordType != "A" || dns.DNSResolver != "10.0.0.10:53" {
+		t.Errorf("dns fields not translated: %+v", dns)
+	}
+	if len(dns.DNSExpectedIPs) != 1 || dns.DNSExpectedIPs[0] != "10.0.0.5" {
+		t.Errorf("dns expected values not translated: %+v", dns.DNSExpectedIPs)
 	}
 }

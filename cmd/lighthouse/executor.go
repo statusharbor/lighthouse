@@ -4,6 +4,8 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
+	"net"
+	"net/url"
 	"strings"
 	"time"
 
@@ -67,6 +69,28 @@ func (e *realExecutor) Run(ctx context.Context, def agent.CheckDefinition) agent
 			Port:    port,
 			Timeout: timeout,
 		}))
+	case "ssl":
+		host, port, err := checks.ParseTCPTarget(def.URL, 443) // default TLS port
+		if err != nil {
+			return downObservation(fmt.Sprintf("invalid ssl target: %s", err.Error()))
+		}
+		return toObservation(checks.SSLCheck{}.Run(ctx, checks.SSLParams{
+			Host:    host,
+			Port:    port,
+			Timeout: timeout,
+		}))
+	case "dns":
+		host := dnsHost(def.URL)
+		if host == "" {
+			return downObservation("invalid dns target: empty host")
+		}
+		return toObservation(checks.DNSCheck{}.Run(ctx, checks.DNSParams{
+			Host:           host,
+			RecordType:     def.DNSRecordType,
+			ExpectedValues: def.DNSExpectedIPs,
+			ResolverAddr:   def.DNSResolver,
+			Timeout:        timeout,
+		}))
 	default:
 		slog.Warn("unknown check type — reporting down",
 			"check_id", def.ID, "type", def.Type)
@@ -80,12 +104,37 @@ func toObservation(r checks.Result) agent.CheckObservation {
 		state = agent.StateDown
 	}
 	return agent.CheckObservation{
-		State:          state,
-		ResponseTimeMs: r.ResponseTimeMs,
-		StatusCode:     r.StatusCode,
-		ErrorMessage:   r.ErrorMessage,
-		ObservedAt:     time.Now().UTC(),
+		State:            state,
+		ResponseTimeMs:   r.ResponseTimeMs,
+		StatusCode:       r.StatusCode,
+		ErrorMessage:     r.ErrorMessage,
+		ObservedAt:       time.Now().UTC(),
+		CertDaysToExpiry: r.CertDaysToExpiry,
 	}
+}
+
+// dnsHost extracts the record name to resolve from a DNS check's URL field.
+// The field normally carries a bare hostname ("api.internal") but tolerates a
+// scheme prefix, an explicit port and a trailing path so a host accidentally
+// configured as a full URL still resolves cleanly.
+func dnsHost(raw string) string {
+	s := strings.TrimSpace(raw)
+	if s == "" {
+		return ""
+	}
+	if strings.Contains(s, "://") {
+		if u, err := url.Parse(s); err == nil && u.Hostname() != "" {
+			return u.Hostname()
+		}
+	}
+	// Strip any trailing path/query and an optional :port.
+	if i := strings.IndexAny(s, "/?"); i >= 0 {
+		s = s[:i]
+	}
+	if h, _, err := net.SplitHostPort(s); err == nil {
+		s = h
+	}
+	return s
 }
 
 func downObservation(msg string) agent.CheckObservation {

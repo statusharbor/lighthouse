@@ -16,6 +16,25 @@
       "expected_status_code": 200,
       "interval_seconds": 60,
       "timeout_seconds": 10
+    },
+    {
+      "id": "9b1f2c44-7e3a-4d8b-bc21-0f5a6d9e1c33",
+      "type": "ssl",
+      "name": "internal-api-cert",
+      "url": "api.internal:443",
+      "interval_seconds": 60,
+      "timeout_seconds": 10
+    },
+    {
+      "id": "3c7d8e10-2b4a-4f6c-9d1e-8a5b6c7d0e2f",
+      "type": "dns",
+      "name": "internal-dns",
+      "url": "api.internal",
+      "interval_seconds": 300,
+      "timeout_seconds": 5,
+      "dns_record_type": "A",
+      "dns_expected_ips": ["10.0.0.5"],
+      "dns_resolver": "10.0.0.10:53"
     }
   ]
 }

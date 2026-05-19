@@ -46,6 +46,10 @@ type Result struct {
 	ResponseTimeMs int
 	StatusCode     int    // HTTP only; 0 for TCP/UDP
 	ErrorMessage   string // empty on Up=true
+	// CertDaysToExpiry is set only by the SSL executor, whenever a leaf
+	// certificate was read (valid OR expired). nil for every other check
+	// type. floor((NotAfter - now) / 24h); may be 0 or negative.
+	CertDaysToExpiry *int
 }
 
 // Run dials the target, applies the optional payload + response assertion,

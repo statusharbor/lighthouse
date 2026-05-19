@@ -18,28 +18,31 @@ type Runner struct {
 	executor CheckExecutor
 
 	// State tracked across the run — committed state per check_id used for
-	// transition detection. Protected by mu (scheduler & heartbeater write
-	// concurrently from worker goroutines).
-	mu        sync.Mutex
-	state     map[string]State
-	latencies map[string]transport.LatencyEntry
-	etag      string
-	buffer    *EventBuffer
-	checks    []CheckDefinition
-	flap      *flapTracker
-	paused    bool
-	health    *HealthState
+	// transition detection. mu guards state + etag; the rollups self-lock
+	// (see rollup.go) so they run lock-free of state-transition commits.
+	mu    sync.Mutex
+	state map[string]State
+	etag  string
+	// latency + certExpiry: sparse per-check telemetry drained onto each heartbeat.
+	latency    *rollup[transport.LatencyEntry]
+	certExpiry *rollup[transport.CertExpiryEntry]
+	buffer     *EventBuffer
+	checks     []CheckDefinition
+	flap       *flapTracker
+	paused     bool
+	health     *HealthState
 }
 
 // NewRunner wires a Runner. The executor abstraction is what tests stub.
 func NewRunner(cfg *Config, client *transport.Client, executor CheckExecutor) *Runner {
 	return &Runner{
-		cfg:       cfg,
-		client:    client,
-		executor:  executor,
-		state:     map[string]State{},
-		latencies: map[string]transport.LatencyEntry{},
-		flap:      newFlapTracker(1), // threshold updated by Register/Heartbeat config
+		cfg:        cfg,
+		client:     client,
+		executor:   executor,
+		state:      map[string]State{},
+		latency:    newRollup[transport.LatencyEntry](),
+		certExpiry: newRollup[transport.CertExpiryEntry](),
+		flap:       newFlapTracker(1), // threshold updated by Register/Heartbeat config
 	}
 }
 
@@ -178,28 +181,6 @@ func (r *Runner) commit(checkID string, s State) {
 	r.state[checkID] = s
 }
 
-// recordLatency stashes a per-check latency snapshot for the next heartbeat.
-// Called by the scheduler after every observation.
-func (r *Runner) recordLatency(checkID string, latencyMs int, observedAt time.Time) {
-	r.mu.Lock()
-	defer r.mu.Unlock()
-	r.latencies[checkID] = transport.LatencyEntry{
-		LastObservedLatencyMs: latencyMs,
-		LastObservedAt:        orNow(observedAt),
-	}
-}
-
-// drainLatencies returns and clears the pending latency map. Sparse map
-// semantics per design §4.2: only checks that produced an observation
-// since the previous heartbeat appear.
-func (r *Runner) drainLatencies() map[string]transport.LatencyEntry {
-	r.mu.Lock()
-	defer r.mu.Unlock()
-	out := r.latencies
-	r.latencies = map[string]transport.LatencyEntry{}
-	return out
-}
-
 // SendHeartbeat performs one heartbeat. Per design §4.2 there is no retry
 // on failure — the next tick is the retry. The caller (the heartbeat
 // ticker) drives cadence; this method just executes one request and
@@ -215,7 +196,8 @@ func (r *Runner) SendHeartbeat(ctx context.Context) (*transport.HeartbeatRespons
 	resp, err := r.client.Heartbeat(ctx, transport.HeartbeatRequest{
 		AgentVersion:   AgentVersion,
 		ConfigEtag:     etag,
-		CheckLatencies: r.drainLatencies(),
+		CheckLatencies: r.latency.drain(),
+		CertExpiry:     r.certExpiry.drain(),
 	})
 	if err != nil {
 		return nil, err
@@ -277,7 +259,19 @@ func (r *Runner) applyFlapAndPaused(flapThreshold int, paused bool) {
 // transition fired — the heartbeat rollup is independent of transitions.
 func (r *Runner) ObserveAndEmit(ctx context.Context, def CheckDefinition) error {
 	obs := r.executor.Run(ctx, def)
-	r.recordLatency(def.ID, obs.ResponseTimeMs, obs.ObservedAt)
+	r.latency.record(def.ID, transport.LatencyEntry{
+		LastObservedLatencyMs: obs.ResponseTimeMs,
+		LastObservedAt:        orNow(obs.ObservedAt),
+	})
+	// ssl checks carry a leaf-cert days-to-expiry whenever a cert was read
+	// (valid or expired) — roll it up for the next heartbeat, independent
+	// of any state transition.
+	if obs.CertDaysToExpiry != nil {
+		r.certExpiry.record(def.ID, transport.CertExpiryEntry{
+			DaysToExpiry: *obs.CertDaysToExpiry,
+			ObservedAt:   orNow(obs.ObservedAt),
+		})
+	}
 
 	r.mu.Lock()
 	prev, hadPrev := r.state[def.ID]
@@ -395,6 +389,9 @@ func CheckDefsFromTransport(in []transport.CheckDef) []CheckDefinition {
 			KeywordPresent:     c.KeywordPresent,
 			RequestBody:        c.RequestBody,
 			SkipTLSVerify:      c.SkipTLSVerify,
+			DNSRecordType:      c.DNSRecordType,
+			DNSExpectedIPs:     c.DNSExpectedIPs,
+			DNSResolver:        c.DNSResolver,
 		}
 		for _, h := range c.RequestHeaders {
 			def.RequestHeaders = append(def.RequestHeaders, HeaderPair{Key: h.Key, Value: h.Value})

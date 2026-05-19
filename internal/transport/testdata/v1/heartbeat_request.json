@@ -6,5 +6,11 @@
       "last_observed_latency_ms": 87,
       "last_observed_at": "2026-05-07T17:15:54Z"
     }
+  },
+  "cert_expiry": {
+    "9b1f2c44-7e3a-4d8b-bc21-0f5a6d9e1c33": {
+      "days_to_expiry": 12,
+      "observed_at": "2026-05-07T17:15:54Z"
+    }
   }
 }

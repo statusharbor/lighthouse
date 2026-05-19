@@ -18,14 +18,14 @@ type RegisterRequest struct {
 // per-agent operating parameters (heartbeat cadence, flap threshold) plus
 // the initial check set.
 type RegisterResponse struct {
-	LighthouseID             string         `json:"lighthouse_id"`
-	Name                     string         `json:"name"`
-	Host                     string         `json:"host"`
-	Paused                   bool           `json:"paused"`
-	HeartbeatIntervalSeconds int            `json:"heartbeat_interval_seconds"`
-	FlapProtectionThreshold  int            `json:"flap_protection_threshold"`
-	ConfigEtag               string         `json:"config_etag"`
-	Checks                   []CheckDef     `json:"checks"`
+	LighthouseID             string     `json:"lighthouse_id"`
+	Name                     string     `json:"name"`
+	Host                     string     `json:"host"`
+	Paused                   bool       `json:"paused"`
+	HeartbeatIntervalSeconds int        `json:"heartbeat_interval_seconds"`
+	FlapProtectionThreshold  int        `json:"flap_protection_threshold"`
+	ConfigEtag               string     `json:"config_etag"`
+	Checks                   []CheckDef `json:"checks"`
 }
 
 // HeaderPair is one custom request header the Console wants the agent to
@@ -50,7 +50,7 @@ type ExpectedHeader struct {
 // type (see Type).
 type CheckDef struct {
 	ID                 string           `json:"id"`
-	Type               string           `json:"type"`           // http | https | tcp | udp
+	Type               string           `json:"type"` // http | https | tcp | udp | ssl | dns
 	Name               string           `json:"name"`
 	URL                string           `json:"url,omitempty"`
 	Method             string           `json:"method,omitempty"`
@@ -63,6 +63,13 @@ type CheckDef struct {
 	RequestBody        string           `json:"request_body,omitempty"`
 	ExpectedHeaders    []ExpectedHeader `json:"expected_headers,omitempty"`
 	SkipTLSVerify      bool             `json:"skip_tls_verify,omitempty"`
+	// DNS-only fields. DNSRecordType defaults to "A" when empty;
+	// DNSExpectedIPs are the expected resolved value(s) (any record type,
+	// not just IPs despite the name); DNSResolver is an optional explicit
+	// resolver `host` or `host:port` (default port 53).
+	DNSRecordType  string   `json:"dns_record_type,omitempty"`
+	DNSExpectedIPs []string `json:"dns_expected_ips,omitempty"`
+	DNSResolver    string   `json:"dns_resolver,omitempty"`
 }
 
 // HeartbeatInterval converts the response's seconds field to a Duration.
@@ -76,6 +83,7 @@ func (r *RegisterResponse) HeartbeatInterval() time.Duration {
 //   - "initial"   — agent boot, every check observed for the first time
 //   - "resync"    — server requested via request_full_resync=true
 //   - "new_check" — agent self-syncing checks added post-startup
+//
 // Per design §3.2 / §4.3.
 type EventsRequest struct {
 	SyncKind string       `json:"sync_kind,omitempty"`
@@ -85,12 +93,12 @@ type EventsRequest struct {
 // EventInput is one state transition. PrevState is nil on initial-sync rows
 // (server treats prev_state=NULL specially per Interpretation B).
 type EventInput struct {
-	CheckID         string  `json:"check_id"`
-	PrevState       *string `json:"prev_state"`
-	NewState        string  `json:"new_state"` // "up" | "down"
-	ResponseTimeMs  *int    `json:"response_time_ms,omitempty"`
-	StatusCode      *int    `json:"status_code,omitempty"`
-	ErrorMessage    *string `json:"error_message,omitempty"`
+	CheckID         string    `json:"check_id"`
+	PrevState       *string   `json:"prev_state"`
+	NewState        string    `json:"new_state"` // "up" | "down"
+	ResponseTimeMs  *int      `json:"response_time_ms,omitempty"`
+	StatusCode      *int      `json:"status_code,omitempty"`
+	ErrorMessage    *string   `json:"error_message,omitempty"`
 	AgentObservedAt time.Time `json:"agent_observed_at"`
 }
 
@@ -104,9 +112,10 @@ type EventsResponse struct {
 // per design §4.2. ConfigEtag is the agent's last-known etag — when it
 // matches, the server omits `checks` from the response to save bandwidth.
 type HeartbeatRequest struct {
-	AgentVersion   string                  `json:"agent_version"`
-	ConfigEtag     string                  `json:"config_etag,omitempty"`
-	CheckLatencies map[string]LatencyEntry `json:"check_latencies,omitempty"`
+	AgentVersion   string                     `json:"agent_version"`
+	ConfigEtag     string                     `json:"config_etag,omitempty"`
+	CheckLatencies map[string]LatencyEntry    `json:"check_latencies,omitempty"`
+	CertExpiry     map[string]CertExpiryEntry `json:"cert_expiry,omitempty"`
 }
 
 // LatencyEntry is a sparse per-check latency snapshot included in the
@@ -115,6 +124,17 @@ type HeartbeatRequest struct {
 type LatencyEntry struct {
 	LastObservedLatencyMs int       `json:"last_observed_latency_ms"`
 	LastObservedAt        time.Time `json:"last_observed_at"`
+}
+
+// CertExpiryEntry is a sparse per-check TLS certificate-expiry snapshot
+// included in the heartbeat, mirroring LatencyEntry. The map is keyed by
+// check id and only contains ssl checks that read a leaf certificate since
+// the previous heartbeat. DaysToExpiry is floor((NotAfter - now) / 24h) and
+// may be 0 or negative for an expired cert. The pre-expiry warning threshold
+// is owned by the Console — the agent applies no threshold logic.
+type CertExpiryEntry struct {
+	DaysToExpiry int       `json:"days_to_expiry"`
+	ObservedAt   time.Time `json:"observed_at"`
 }
 
 // HeartbeatResponse: paused state, current threshold, etag the agent should
