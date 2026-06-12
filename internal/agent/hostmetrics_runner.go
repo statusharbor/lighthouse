@@ -41,6 +41,11 @@ func (r *Runner) RunHostMetrics(ctx context.Context, cfg *transport.HostMetricsC
 	if interval <= 0 {
 		interval = 30 * time.Second
 	}
+	// Inject our shutdown-aware ctx into collectors that opt in to
+	// ctxCollector (today: k8sstats, which previously used
+	// context.Background as the parent for its per-tick WithTimeout).
+	// Plain collectors (noop, /proc reader) silently ignore.
+	applyContext(collector, ctx)
 	slog.Info("host-metrics collector started", "interval", interval)
 
 	// First tick happens immediately on start so the dashboard has data

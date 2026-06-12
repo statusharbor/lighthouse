@@ -11,11 +11,11 @@ import (
 	"github.com/statusharbor/lighthouse/internal/transport"
 )
 
-// Backoff schedule for sendEventsWithBuffer (A1). Three attempts at
-// 1s / 4s / 16s before falling back to the on-disk buffer per
-// design §4.3. Total wall-clock = ~21s on the worst case — tight
-// enough that a check ticking on a 30s interval doesn't queue up
-// behind retries during a brief Console flake.
+// Backoff schedule for sendEventsWithBuffer. Three attempts at
+// 1s / 4s / 16s before falling back to the on-disk buffer. Total
+// wall-clock = ~21s on the worst case — tight enough that a check
+// ticking on a 30s interval doesn't queue up behind retries during
+// a brief Console flake.
 var eventsRetrySchedule = []time.Duration{
 	1 * time.Second,
 	4 * time.Second,
@@ -233,7 +233,7 @@ func (r *Runner) sendEventsWithBuffer(ctx context.Context, req transport.EventsR
 		return nil
 	}
 
-	// Degraded-mode short-circuit (A3). Heartbeat has been failing;
+	// Degraded-mode short-circuit. Heartbeat has been failing;
 	// don't burn 21s of backoff per transition just to fail again.
 	// Drain happens immediately on the next successful heartbeat.
 	if r.degradedHeartbeats.Load() >= degradedThreshold {
@@ -251,9 +251,15 @@ func (r *Runner) sendEventsWithBuffer(ctx context.Context, req transport.EventsR
 		}
 		if errors.Is(err, transport.ErrLighthouseGone) {
 			// No retry — lighthouse is gone, agent should exit.
-			// Caller (Shutdown) cares about this specific error so
-			// the buffer doesn't accumulate junk for a dead
-			// destination.
+			// Shutdown() cares about this specific error so the
+			// buffer doesn't accumulate junk for a dead
+			// destination. Non-shutdown callers (RunScheduler →
+			// ObserveAndEmit) treat it the same way and exit, so
+			// the events in flight here ARE dropped on the floor.
+			// Log it so the loss is visible in operator-side traces
+			// when this happens for any other reason.
+			slog.Warn("events dropped: lighthouse gone (agent will exit)",
+				"events", len(req.Events))
 			return err
 		}
 		lastErr = err

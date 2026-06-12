@@ -77,31 +77,53 @@ type HTTPHostMetricsSender struct {
 	scratch          []byte // reused encode buffer per call site; nil-safe
 }
 
+// HTTPHostMetricsConfig groups the construction parameters for
+// NewHTTPHostMetricsSender. Six positional strings were easy to swap
+// at the call site (instanceID and hostname share a type); the struct
+// makes the field semantics readable.
+//
+// HTTPClient is optional; the default uses the same dial/TLS/header
+// stage budgets as transport.Client via NewAgentTransport so a hung
+// VictoriaMetrics relay can't keep a TCP connection open past the
+// per-stage limits.
+type HTTPHostMetricsConfig struct {
+	BaseURL      string
+	Token        string
+	LighthouseID string
+	Hostname     string
+	InstanceID   string
+	HTTPClient   *http.Client
+}
+
 // NewHTTPHostMetricsSender constructs a Sender wired to the same Console as
 // the existing transport.Client. Use the same baseURL + token so a single
 // agent process speaks to one Console with one identity.
 //
-// lighthouseID stamps a `lighthouse_id="<uuid>"` label on every emitted
+// LighthouseID stamps a `lighthouse_id="<uuid>"` label on every emitted
 // sample. The relay is a thin proxy that does NOT decode and re-stamp
 // labels (handler_lighthouse_host_metrics.go header), so any label that
 // scopes-to-this-agent has to come from the agent itself. Without it, the
 // Console UI's "filter by lighthouse" path returns empty.
 //
-// hostname stamps a `host="<os.Hostname()>"` label on every sample that
+// Hostname stamps a `host="<os.Hostname()>"` label on every sample that
 // doesn't already carry one. Collectors that emit per-mount or per-device
 // metrics already attach `mount` / `device` but don't always attach
 // `host` — this fills the gap so the Console UI can render
 // "lighthouse-name(hostname)" labels uniformly. Empty hostname is a noop.
-func NewHTTPHostMetricsSender(baseURL, token, lighthouseID, hostname, instanceID string, httpc *http.Client) *HTTPHostMetricsSender {
+func NewHTTPHostMetricsSender(cfg HTTPHostMetricsConfig) *HTTPHostMetricsSender {
+	httpc := cfg.HTTPClient
 	if httpc == nil {
-		httpc = &http.Client{Timeout: defaultHostMetricsTimeout}
+		httpc = &http.Client{
+			Timeout:   defaultHostMetricsTimeout,
+			Transport: NewAgentTransport(),
+		}
 	}
 	return &HTTPHostMetricsSender{
-		baseURL:          baseURL,
-		token:            token,
-		lighthouseID:     lighthouseID,
-		hostname:         hostname,
-		instanceID:       instanceID,
+		baseURL:      cfg.BaseURL,
+		token:        cfg.Token,
+		lighthouseID: cfg.LighthouseID,
+		hostname:     cfg.Hostname,
+		instanceID:   cfg.InstanceID,
 		// UTC — only ever used as the reference point for time.Since(),
 		// so the timezone is mathematically irrelevant, but storing UTC
 		// keeps any future log/serialise call timezone-clean.
@@ -110,12 +132,8 @@ func NewHTTPHostMetricsSender(baseURL, token, lighthouseID, hostname, instanceID
 	}
 }
 
-// defaultHostMetricsTimeout matches transport.Client at client.go:39 — same
-// 30s ceiling for any request to the Console. Previously this was expressed
-// as `30 * defaultTimeoutMultiplier` with a unitless multiplier; without the
-// `time.Second` unit Go coerced the untyped int to time.Duration as
-// nanoseconds, giving a 30ns timeout (so every Emit failed with "context
-// deadline exceeded"). Explicit units fix the bug at the source.
+// defaultHostMetricsTimeout matches transport.Client — same 30s
+// ceiling for any request to the Console.
 const defaultHostMetricsTimeout = 30 * time.Second
 
 // Emit encodes the batch to remote_write, snappy-compresses, and POSTs to the

@@ -30,6 +30,23 @@ import (
 // black out the cluster aggregate.
 var ErrBadQuantity = errors.New("k8sstats: bad quantity")
 
+// Suffix multipliers, hoisted to file scope so parseMemoryQuantity
+// doesn't allocate two maps per call. Binary first, decimal second —
+// "Mi" must match before "M" since they share the leading byte.
+var (
+	binarySuffixMul = map[string]float64{
+		"Ki": 1 << 10,
+		"Mi": 1 << 20,
+		"Gi": 1 << 30,
+		"Ti": 1 << 40,
+		"Pi": 1 << 50,
+		"Ei": 1 << 60,
+	}
+	decimalSuffixMul = map[string]float64{
+		"K": 1e3, "M": 1e6, "G": 1e9, "T": 1e12, "P": 1e15, "E": 1e18,
+	}
+)
+
 // parseCPUQuantity converts a Kubernetes CPU quantity to fractional
 // cores. Examples:
 //
@@ -81,15 +98,7 @@ func parseMemoryQuantity(s string) (float64, error) {
 	}
 	// Try the binary suffixes first because they're a strict superset
 	// of the decimal ones ("Mi" vs "M" only differs in the trailing i).
-	binaryMul := map[string]float64{
-		"Ki": 1 << 10,
-		"Mi": 1 << 20,
-		"Gi": 1 << 30,
-		"Ti": 1 << 40,
-		"Pi": 1 << 50,
-		"Ei": 1 << 60,
-	}
-	for suf, mul := range binaryMul {
+	for suf, mul := range binarySuffixMul {
 		if strings.HasSuffix(s, suf) {
 			v, err := strconv.ParseFloat(s[:len(s)-len(suf)], 64)
 			if err != nil || v < 0 {
@@ -98,10 +107,7 @@ func parseMemoryQuantity(s string) (float64, error) {
 			return v * mul, nil
 		}
 	}
-	decimalMul := map[string]float64{
-		"K": 1e3, "M": 1e6, "G": 1e9, "T": 1e12, "P": 1e15, "E": 1e18,
-	}
-	for suf, mul := range decimalMul {
+	for suf, mul := range decimalSuffixMul {
 		if strings.HasSuffix(s, suf) {
 			v, err := strconv.ParseFloat(s[:len(s)-len(suf)], 64)
 			if err != nil || v < 0 {

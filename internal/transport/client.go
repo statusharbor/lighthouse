@@ -67,11 +67,20 @@ func NewClient(baseURL, token, instanceID string) *Client {
 	}
 }
 
+// maxIdleConnsPerConsole bounds the keepalive pool against one
+// Console host. The agent's concurrent goroutines (heartbeat, events,
+// host-metrics, discovery snapshot) all share it; 4 keeps the pool
+// warm without spawning excess sockets.
+const maxIdleConnsPerConsole = 4
+
 // newAgentTransport returns a pinned http.Transport so future
 // std-lib bumps don't change behaviour silently and so we own the
-// assumptions we make about the Console's behaviour.
+// assumptions we make about the Console's behaviour. Exported as
+// NewAgentTransport so the host-metrics sender (separate *http.Client
+// for the remote_write path) inherits the same stage budgets.
 //
-// Stage budgets — pre-flight tighter than the wall-clock 30s above:
+// Stage budgets — pre-flight tighter than the wall-clock 30s on the
+// owning Client:
 //
 //   - Dial:                   5s  (DNS + TCP connect)
 //   - TLS handshake:          5s  (verify the cert chain)
@@ -89,7 +98,7 @@ func NewClient(baseURL, token, instanceID string) *Client {
 //
 // HTTP/2 is force-attempted so a Console behind a Gateway / L7
 // load balancer doesn't pay the per-request TCP + TLS cost.
-func newAgentTransport() *http.Transport {
+func NewAgentTransport() *http.Transport {
 	return &http.Transport{
 		DialContext: (&net.Dialer{
 			Timeout:   5 * time.Second,
@@ -99,13 +108,15 @@ func newAgentTransport() *http.Transport {
 		ResponseHeaderTimeout:  10 * time.Second,
 		MaxResponseHeaderBytes: 256 * 1024,
 		IdleConnTimeout:        60 * time.Second,
-		MaxIdleConnsPerHost:    4, // small fleet of concurrent
-		// goroutines (heartbeat, events, host metrics, discovery
-		// snapshot) all hitting one Console host. 4 keeps the
-		// pool warm without spawning excess sockets.
-		ForceAttemptHTTP2: true,
+		MaxIdleConnsPerHost:    maxIdleConnsPerConsole,
+		ForceAttemptHTTP2:      true,
 	}
 }
+
+// newAgentTransport is the package-internal alias preserved so existing
+// callers don't need to change. New external callers (other transport
+// types) should use the exported NewAgentTransport.
+func newAgentTransport() *http.Transport { return NewAgentTransport() }
 
 // Register performs the startup handshake. Per design §4.1 the agent
 // reports its identity and the server returns the operating parameters

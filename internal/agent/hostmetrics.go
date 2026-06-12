@@ -25,6 +25,7 @@
 package agent
 
 import (
+	"context"
 	"sort"
 
 	"github.com/statusharbor/lighthouse/internal/transport"
@@ -36,6 +37,27 @@ import (
 // its own goroutine.
 type Collector interface {
 	Collect() ([]transport.HostSample, error)
+}
+
+// ctxCollector is an optional add-on that the runner uses to inject a
+// shutdown-aware parent context into a Collector. Implementations that
+// do long-running work (kubelet fan-out, slow apiserver calls) should
+// satisfy this so a SIGTERM mid-tick aborts the in-flight work rather
+// than holding the goroutine until the collector's internal budget
+// fires. Plain Collectors (noop, /proc reader) need not implement it.
+type ctxCollector interface {
+	SetContext(ctx context.Context)
+}
+
+// applyContext is the runner's helper for wiring a shutdown context
+// into an arbitrary Collector. Type-asserts to ctxCollector and
+// no-ops if the underlying impl doesn't care about the context.
+// Exported (lowercase, package-internal) so RunHostMetrics and tests
+// can both reach it.
+func applyContext(c Collector, ctx context.Context) {
+	if cc, ok := c.(ctxCollector); ok {
+		cc.SetContext(ctx)
+	}
 }
 
 // AllowedMetrics returns the curated metric-name allowlist baked into the
@@ -120,8 +142,12 @@ func (noopCollector) Collect() ([]transport.HostSample, error) { return nil, nil
 // through the single host-metrics ticker. Individual collector
 // failures are independent — a failing k8sstats query doesn't drop
 // /proc samples and vice versa.
+//
+// The child slice is unexported so callers can't mutate the set
+// post-construction (which would race with Collect on the runner's
+// goroutine). Construct via NewMultiCollector.
 type MultiCollector struct {
-	Collectors []Collector
+	collectors []Collector
 }
 
 // NewMultiCollector compacts nil entries so callers can do
@@ -131,7 +157,7 @@ func NewMultiCollector(cs ...Collector) Collector {
 	out := MultiCollector{}
 	for _, c := range cs {
 		if c != nil {
-			out.Collectors = append(out.Collectors, c)
+			out.collectors = append(out.collectors, c)
 		}
 	}
 	return out
@@ -143,10 +169,10 @@ func NewMultiCollector(cs ...Collector) Collector {
 // for a single transient apiserver hiccup.
 func (m MultiCollector) Collect() ([]transport.HostSample, error) {
 	var (
-		out     []transport.HostSample
+		out      []transport.HostSample
 		firstErr error
 	)
-	for _, c := range m.Collectors {
+	for _, c := range m.collectors {
 		samples, err := c.Collect()
 		if err != nil && firstErr == nil {
 			firstErr = err
@@ -154,4 +180,14 @@ func (m MultiCollector) Collect() ([]transport.HostSample, error) {
 		out = append(out, samples...)
 	}
 	return out, firstErr
+}
+
+// SetContext forwards the runner's shutdown-aware context to each
+// child collector that opts in via ctxCollector. Lets the runner do a
+// single applyContext(multi, ctx) call without knowing which children
+// care about cancellation.
+func (m MultiCollector) SetContext(ctx context.Context) {
+	for _, c := range m.collectors {
+		applyContext(c, ctx)
+	}
 }

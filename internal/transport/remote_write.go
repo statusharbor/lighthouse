@@ -3,6 +3,7 @@ package transport
 import (
 	"encoding/binary"
 	"math"
+	"sort"
 )
 
 // Prometheus remote_write WriteRequest encoder — hand-rolled because the
@@ -63,8 +64,23 @@ func EncodeWriteRequest(dst []byte, samples []HostSample) []byte {
 		groups[k] = append(groups[k], s)
 	}
 
-	for k, batch := range groups {
-		ts := encodeTimeSeries(k.name, batch)
+	// Emit TimeSeries in a deterministic order. remote_write receivers
+	// don't require it, but a non-deterministic byte stream makes test
+	// fixtures and any future payload-hash dedup brittle. Sort by
+	// (name, fingerprint).
+	keys := make([]seriesKey, 0, len(groups))
+	for k := range groups {
+		keys = append(keys, k)
+	}
+	sort.Slice(keys, func(i, j int) bool {
+		if keys[i].name != keys[j].name {
+			return keys[i].name < keys[j].name
+		}
+		return keys[i].fp < keys[j].fp
+	})
+
+	for _, k := range keys {
+		ts := encodeTimeSeries(k.name, groups[k])
 		// WriteRequest.timeseries = field 1, wire type 2 (length-delimited).
 		dst = appendVarintTag(dst, 1, 2)
 		dst = appendVarint(dst, uint64(len(ts)))
@@ -180,14 +196,6 @@ func sortedKeys(m map[string]string) []string {
 	for k := range m {
 		out = append(out, k)
 	}
-	// Hand-rolled insertion sort — labels per series are ≤10 in practice
-	// (CPU label, mount label, …); the import-free version keeps deps minimal.
-	for i := 1; i < len(out); i++ {
-		j := i
-		for j > 0 && out[j-1] > out[j] {
-			out[j-1], out[j] = out[j], out[j-1]
-			j--
-		}
-	}
+	sort.Strings(out)
 	return out
 }

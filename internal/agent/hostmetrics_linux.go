@@ -23,6 +23,7 @@ import (
 	"bufio"
 	"os"
 	"path/filepath"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -621,16 +622,10 @@ func skipNetInterface(iface string) bool {
 	return false
 }
 
-// sortStringy sorts netStats by iface name. Inlined to avoid pulling
-// "sort" into the file's import set for a single use; we already do a
-// stable lexicographic insertion-sort pattern via bubble for the tiny
-// slice this produces.
+// sortStringy sorts netStats by iface name. Stable lexicographic order so
+// that under the cap the same interfaces are kept every tick.
 func sortStringy(s []netStats) {
-	for i := 1; i < len(s); i++ {
-		for j := i; j > 0 && s[j-1].iface > s[j].iface; j-- {
-			s[j-1], s[j] = s[j], s[j-1]
-		}
-	}
+	sort.Slice(s, func(i, j int) bool { return s[i].iface < s[j].iface })
 }
 
 // --- /proc/diskstats -------------------------------------------------------
@@ -747,15 +742,9 @@ func allDigits(s string) bool {
 	return true
 }
 
-// sortDiskstats — same inlined insertion sort as sortStringy (netStats),
-// for the same reason: tiny N, no need for sort.Slice + lambda + new
-// import line. Keeps the stable ordering invariant the cap relies on.
+// sortDiskstats orders devices by name so the cap picks a stable subset.
 func sortDiskstats(s []diskIOStats) {
-	for i := 1; i < len(s); i++ {
-		for j := i; j > 0 && s[j-1].device > s[j].device; j-- {
-			s[j-1], s[j] = s[j], s[j-1]
-		}
-	}
+	sort.Slice(s, func(i, j int) bool { return s[i].device < s[j].device })
 }
 
 // --- tiny error helper -----------------------------------------------------

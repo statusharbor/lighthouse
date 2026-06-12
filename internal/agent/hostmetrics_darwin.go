@@ -575,7 +575,10 @@ func readMountsDarwin() ([]fsStatDarwin, error) {
 			fs.usedPercent = 100.0 * float64(used) / float64(totalBytes)
 		}
 		if st.Files > 0 {
-			fs.inodesUsedPercent = 100.0 * float64(st.Files-st.Ffree) / float64(st.Files)
+			// saturatingSubU64 guards against future macOS volumes
+			// returning Ffree > Files (sealed-system edge case) — a
+			// raw subtraction would underflow uint64 and emit ~1.8e19.
+			fs.inodesUsedPercent = 100.0 * float64(saturatingSubU64(st.Files, st.Ffree)) / float64(st.Files)
 		}
 		out = append(out, fs)
 	}

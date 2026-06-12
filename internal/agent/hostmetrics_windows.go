@@ -128,6 +128,15 @@ func (c *windowsCollector) Collect() ([]transport.HostSample, error) {
 // memoryStatusEx mirrors the MEMORYSTATUSEX struct from sysinfoapi.h. All
 // fields are uint64 except dwLength + dwMemoryLoad (uint32). DWORD alignment
 // matters — the struct layout below matches the Windows C declaration exactly.
+// kernel32 + its procs are looked up once at package init. Doing it inside
+// Collect() would mean a symbol lookup per tick — cheap in absolute terms
+// but pointless, and noisy under tools that trace syscalls.
+var (
+	kernel32                  = windows.NewLazySystemDLL("kernel32.dll")
+	procGlobalMemoryStatusEx  = kernel32.NewProc("GlobalMemoryStatusEx")
+	procGetDiskFreeSpaceExW   = kernel32.NewProc("GetDiskFreeSpaceExW")
+)
+
 type memoryStatusEx struct {
 	dwLength                uint32
 	dwMemoryLoad            uint32
@@ -152,9 +161,7 @@ func readMemStatusWindows() (meminfoWindows, error) {
 	var ms memoryStatusEx
 	ms.dwLength = uint32(unsafe.Sizeof(ms))
 
-	kernel32 := windows.NewLazySystemDLL("kernel32.dll")
-	proc := kernel32.NewProc("GlobalMemoryStatusEx")
-	r1, _, lastErr := proc.Call(uintptr(unsafe.Pointer(&ms)))
+	r1, _, lastErr := procGlobalMemoryStatusEx.Call(uintptr(unsafe.Pointer(&ms)))
 	if r1 == 0 {
 		return meminfoWindows{}, lastErr
 	}
@@ -248,9 +255,7 @@ func diskFreeSpaceWindows(drive string) (fsStatWindows, error) {
 	// GetDiskFreeSpaceEx — freeAvail = bytes available to caller (respects
 	// quotas), totalFree = bytes free on the volume. Use totalFree for our
 	// metrics so per-tenant quotas don't skew the numbers.
-	kernel32 := windows.NewLazySystemDLL("kernel32.dll")
-	proc := kernel32.NewProc("GetDiskFreeSpaceExW")
-	r1, _, lastErr := proc.Call(
+	r1, _, lastErr := procGetDiskFreeSpaceExW.Call(
 		uintptr(unsafe.Pointer(ptr)),
 		uintptr(unsafe.Pointer(&freeAvail)),
 		uintptr(unsafe.Pointer(&total)),

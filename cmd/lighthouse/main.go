@@ -233,7 +233,13 @@ func main() {
 	wg.Add(1)
 	go func() {
 		defer wg.Done()
-		sender := transport.NewHTTPHostMetricsSender(agent.ConsoleURL, cfg.Token, regResp.LighthouseID, hostname, instanceID, nil)
+		sender := transport.NewHTTPHostMetricsSender(transport.HTTPHostMetricsConfig{
+			BaseURL:      agent.ConsoleURL,
+			Token:        cfg.Token,
+			LighthouseID: regResp.LighthouseID,
+			Hostname:     hostname,
+			InstanceID:   instanceID,
+		})
 		// Host /proc collector — always runs (DaemonSet pods get
 		// /host/proc via cfg.Agent.ProcRoot, plus optionally the host's
 		// / bind-mounted at cfg.Agent.HostRoot so per-mount disk stats

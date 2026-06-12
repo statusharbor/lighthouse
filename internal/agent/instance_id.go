@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log/slog"
 	"os"
 	"path/filepath"
 	"strings"
@@ -55,7 +56,10 @@ func LoadOrCreateInstanceID(dataDir string) (string, error) {
 		// Corrupt / wrong shape — overwrite with a fresh one rather
 		// than carrying a half-formed value forward. A stale value
 		// only matters if it matches another agent's; effectively
-		// impossible by birthday-bound.
+		// impossible by birthday-bound. Surface it: an operator who
+		// hand-edited the file should see why their value didn't stick.
+		slog.Warn("instance id file present but unparseable; regenerating",
+			"path", path, "bytes", len(b))
 	}
 
 	id, err := newV4()

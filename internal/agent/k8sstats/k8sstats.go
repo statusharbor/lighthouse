@@ -71,6 +71,29 @@ const (
 // unconditional `c, _ := k8sstats.NewCollector(); if c != nil { ... }`.
 type Collector struct {
 	client *kubeClient
+
+	// parentCtx is the shutdown-aware context the runner injects via
+	// SetContext. Used as the parent for the per-tick WithTimeout so
+	// an in-flight apiserver call aborts when the agent is shutting
+	// down rather than holding the goroutine until tickBudget fires.
+	// Defaults to context.Background() — set once on startup; we treat
+	// it as immutable thereafter so Collect() can read it lock-free.
+	parentCtx context.Context
+}
+
+// SetContext lets the runner inject a shutdown-aware parent context.
+// Optional; defaults to context.Background(). Idempotent; calling
+// twice replaces the previously-set context.
+//
+// Exported as an optional interface (the agent package's RunHostMetrics
+// does a type-assertion at startup) so the existing Collector contract
+// stays a single-method interface and tests can keep calling Collect()
+// with no arguments.
+func (c *Collector) SetContext(ctx context.Context) {
+	if c == nil || ctx == nil {
+		return
+	}
+	c.parentCtx = ctx
 }
 
 // NewCollector returns the production collector. Returns (nil, nil)
@@ -91,10 +114,11 @@ func NewCollector() (*Collector, error) {
 }
 
 // Collect produces one batch of cluster-shape samples. Errors from
-// individual apiserver calls are swallowed (logged is the runner's
-// job) — a transient apiserver hiccup shouldn't black out the whole
-// tick. Failure of one query means missing samples for that section,
-// not aborting the rest.
+// individual apiserver calls are logged at Warn and the corresponding
+// samples are skipped — a transient apiserver hiccup shouldn't black
+// out the whole tick. Failure of one query means missing samples for
+// that section, not aborting the rest. Persistent failures (RBAC,
+// auth) surface in the log instead of silently emitting nothing.
 func (c *Collector) Collect() ([]transport.HostSample, error) {
 	if c == nil || c.client == nil {
 		return nil, nil
@@ -117,7 +141,11 @@ func (c *Collector) Collect() ([]transport.HostSample, error) {
 				"duration", dur, "budget", tickBudget)
 		}
 	}()
-	ctx, cancel := context.WithTimeout(context.Background(), tickBudget)
+	parent := c.parentCtx
+	if parent == nil {
+		parent = context.Background()
+	}
+	ctx, cancel := context.WithTimeout(parent, tickBudget)
 	defer cancel()
 
 	nowMs := time.Now().UnixMilli()
@@ -125,9 +153,13 @@ func (c *Collector) Collect() ([]transport.HostSample, error) {
 
 	// Node list first — we need it both for nodeSamples (count /
 	// ready / not-ready) and for the kubelet fan-out (names +
-	// allocatable). One miss here drops everything downstream.
+	// allocatable). One miss here drops everything downstream, so
+	// log it loudly: a persistent RBAC denial on nodes:list would
+	// otherwise be invisible.
 	nodes, err := c.client.listNodes(ctx)
-	if err == nil {
+	if err != nil {
+		slog.Warn("k8sstats: list nodes failed; skipping node/kubelet/pvc-usage samples this tick", "error", err)
+	} else {
 		out = append(out, nodeSamples(nodes, nowMs)...)
 
 		// Per-node usage from kubelet /stats/summary. Run with a
@@ -152,10 +184,14 @@ func (c *Collector) Collect() ([]transport.HostSample, error) {
 		out = append(out, pvcUsageSamples(summaries, nowMs)...)
 	}
 
-	if pods, err := c.client.listPods(ctx); err == nil {
+	if pods, err := c.client.listPods(ctx); err != nil {
+		slog.Warn("k8sstats: list pods failed; skipping pod samples this tick", "error", err)
+	} else {
 		out = append(out, podSamples(pods, nowMs)...)
 	}
-	if pvcs, err := c.client.listPVCs(ctx); err == nil {
+	if pvcs, err := c.client.listPVCs(ctx); err != nil {
+		slog.Warn("k8sstats: list pvcs failed; skipping pvc count this tick", "error", err)
+	} else {
 		out = append(out, pvcSamples(pvcs, nowMs)...)
 	}
 	return out, nil
@@ -333,12 +369,20 @@ func inClusterClient() (*kubeClient, error) {
 		apiServer: fmt.Sprintf("https://%s:%s", host, port),
 		token:     strings.TrimSpace(string(tokenBytes)),
 		httpc: &http.Client{
+			// Per-call timeout backstops the per-call ctx. tickBudget
+			// (60s) is the wall-clock for one Collect; a single
+			// apiserver call shouldn't burn more than a quarter of
+			// that, so a stuck listNodes can't starve listPods +
+			// listPVCs further down the same tick.
+			Timeout: apiServerTimeout,
 			Transport: &http.Transport{
 				TLSClientConfig: &tls.Config{RootCAs: pool},
 			},
 		},
 	}, nil
 }
+
+const apiServerTimeout = 15 * time.Second
 
 func (k *kubeClient) get(ctx context.Context, path string, into any) error {
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, k.apiServer+path, nil)

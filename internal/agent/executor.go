@@ -2,6 +2,7 @@ package agent
 
 import (
 	"context"
+	"slices"
 	"time"
 )
 
@@ -115,29 +116,10 @@ func (d CheckDefinition) Equal(other CheckDefinition) bool {
 		d.DNSResolver != other.DNSResolver {
 		return false
 	}
-	if len(d.RequestHeaders) != len(other.RequestHeaders) {
-		return false
-	}
-	for i, h := range d.RequestHeaders {
-		if h != other.RequestHeaders[i] {
-			return false
-		}
-	}
-	if len(d.ExpectedHeaders) != len(other.ExpectedHeaders) {
-		return false
-	}
-	for i, h := range d.ExpectedHeaders {
-		if h != other.ExpectedHeaders[i] {
-			return false
-		}
-	}
-	if len(d.DNSExpectedIPs) != len(other.DNSExpectedIPs) {
-		return false
-	}
-	for i, s := range d.DNSExpectedIPs {
-		if s != other.DNSExpectedIPs[i] {
-			return false
-		}
-	}
-	return true
+	// slices.Equal is order-sensitive — same semantics as the explicit
+	// loops it replaces, and the compiler intrinsifies it for string
+	// slices so there's no allocation penalty.
+	return slices.Equal(d.RequestHeaders, other.RequestHeaders) &&
+		slices.Equal(d.ExpectedHeaders, other.ExpectedHeaders) &&
+		slices.Equal(d.DNSExpectedIPs, other.DNSExpectedIPs)
 }
