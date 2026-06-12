@@ -6,9 +6,11 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log/slog"
 	"os"
 	"path/filepath"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/statusharbor/lighthouse/internal/transport"
@@ -31,6 +33,13 @@ type EventBuffer struct {
 	maxBytes int64
 
 	mu sync.Mutex
+
+	// droppedTotal accumulates the number of buffered event lines
+	// the trim path has discarded across the buffer's lifetime.
+	// Exposed via DroppedTotal() so the agent's /healthz or a future
+	// self-metrics endpoint can surface it. Atomic so reads from
+	// the health goroutine don't need to take b.mu.
+	droppedTotal atomic.Uint64
 }
 
 // Default bounds per design §7.3 (event batcher description).
@@ -86,8 +95,20 @@ func (b *EventBuffer) Append(events []transport.EventInput) error {
 	// Trim by size if needed. Time-based trim happens lazily on Drain.
 	st, err := f.Stat()
 	if err == nil && st.Size() > b.maxBytes {
-		if err := b.trimToBytes(b.maxBytes); err != nil {
+		dropped, err := b.trimToBytes(b.maxBytes)
+		if err != nil {
 			return fmt.Errorf("trim: %w", err)
+		}
+		if dropped > 0 {
+			// Cumulative atomic counter for the health surface; per-
+			// trim Warn so an operator grep'ing the log sees the
+			// event. The cumulative number tells them whether this
+			// is the first such event or an ongoing pattern.
+			total := b.droppedTotal.Add(uint64(dropped))
+			slog.Warn("event buffer trimmed; oldest events dropped",
+				"dropped_events", dropped,
+				"dropped_total", total,
+				"max_bytes", b.maxBytes)
 		}
 	}
 	return nil
@@ -161,23 +182,42 @@ func (b *EventBuffer) IsEmpty() (bool, error) {
 	return st.Size() == 0, nil
 }
 
-// trimToBytes drops oldest lines until the file fits in maxBytes. Caller
-// must hold b.mu.
-func (b *EventBuffer) trimToBytes(maxBytes int64) error {
+// trimToBytes drops oldest lines until the file fits in maxBytes.
+// Returns the number of lines dropped so the caller can log + count
+// — operators looking at "why is my agent's reporting incomplete?"
+// need this signal. Caller must hold b.mu.
+func (b *EventBuffer) trimToBytes(maxBytes int64) (int, error) {
 	data, err := os.ReadFile(b.path)
 	if err != nil {
-		return err
+		return 0, err
 	}
+	dropped := 0
 	for int64(len(data)) > maxBytes {
 		// Drop the oldest line.
 		idx := indexOfNewline(data)
 		if idx < 0 {
+			// No newline found; whole buffer fits in one
+			// pathologically long line. Reset to empty and count
+			// the whole thing as one drop.
 			data = nil
+			dropped++
 			break
 		}
 		data = data[idx+1:]
+		dropped++
 	}
-	return os.WriteFile(b.path, data, 0o600)
+	if err := os.WriteFile(b.path, data, 0o600); err != nil {
+		return dropped, err
+	}
+	return dropped, nil
+}
+
+// DroppedTotal returns the cumulative number of event lines the buffer
+// has discarded due to the maxBytes cap across this agent process's
+// lifetime. Exposed so the health endpoint / a future self-metrics
+// path can surface "the buffer is overflowing; events being lost."
+func (b *EventBuffer) DroppedTotal() uint64 {
+	return b.droppedTotal.Load()
 }
 
 func indexOfNewline(b []byte) int {

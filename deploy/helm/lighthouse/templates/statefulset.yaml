@@ -22,6 +22,15 @@ spec:
         {{- toYaml . | nindent 8 }}
       {{- end }}
     spec:
+      # 60s default — the lighthouse agent's shutdown sequence
+      # waits up to 30s for in-flight checks to finish, then
+      # flushes its on-disk event buffer (one HTTP retry burst if
+      # the Console was unreachable), then posts /shutdown so the
+      # Console can fire EventLighthouseStopped instead of waiting
+      # 60s for the offline watchdog. K8s's default 30s SIGKILLs
+      # mid-flush on a busy agent. Customers whose pod-eviction
+      # policy benefits from quicker turnover can lower this.
+      terminationGracePeriodSeconds: {{ .Values.terminationGracePeriodSeconds }}
       serviceAccountName: {{ include "lighthouse.serviceAccountName" . }}
       {{- with .Values.imagePullSecrets }}
       imagePullSecrets:

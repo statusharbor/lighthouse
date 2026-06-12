@@ -82,3 +82,62 @@ type CheckDefinition struct {
 	DNSExpectedIPs []string
 	DNSResolver    string
 }
+
+// Equal returns true when every field matches by value (deep on the
+// header + DNS slices). Used by the scheduler supervisor to decide
+// whether a check's goroutine needs restarting on each
+// supervisorTickInterval pass.
+//
+// We hand-roll this instead of reflect.DeepEqual to avoid the
+// reflection cost: with N checks and M ticks/hour the supervisor
+// does N×M deep-equal walks, and reflection ~10-100x slower than
+// direct field comparison adds up at fleet scale. Also makes future
+// "hash CheckDefinition for the config etag" a trivial extension.
+//
+// Slice equality is order-sensitive — RequestHeaders[0]/[1] swapped
+// counts as a change. That's intentional: header order matters for
+// some APIs, and a definition-side reordering is a real "this is
+// different" event the supervisor should react to.
+func (d CheckDefinition) Equal(other CheckDefinition) bool {
+	if d.ID != other.ID ||
+		d.Type != other.Type ||
+		d.Name != other.Name ||
+		d.URL != other.URL ||
+		d.Method != other.Method ||
+		d.ExpectedStatusCode != other.ExpectedStatusCode ||
+		d.IntervalSeconds != other.IntervalSeconds ||
+		d.TimeoutSeconds != other.TimeoutSeconds ||
+		d.KeywordCheck != other.KeywordCheck ||
+		d.KeywordPresent != other.KeywordPresent ||
+		d.RequestBody != other.RequestBody ||
+		d.SkipTLSVerify != other.SkipTLSVerify ||
+		d.DNSRecordType != other.DNSRecordType ||
+		d.DNSResolver != other.DNSResolver {
+		return false
+	}
+	if len(d.RequestHeaders) != len(other.RequestHeaders) {
+		return false
+	}
+	for i, h := range d.RequestHeaders {
+		if h != other.RequestHeaders[i] {
+			return false
+		}
+	}
+	if len(d.ExpectedHeaders) != len(other.ExpectedHeaders) {
+		return false
+	}
+	for i, h := range d.ExpectedHeaders {
+		if h != other.ExpectedHeaders[i] {
+			return false
+		}
+	}
+	if len(d.DNSExpectedIPs) != len(other.DNSExpectedIPs) {
+		return false
+	}
+	for i, s := range d.DNSExpectedIPs {
+		if s != other.DNSExpectedIPs[i] {
+			return false
+		}
+	}
+	return true
+}

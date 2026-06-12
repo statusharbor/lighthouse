@@ -2,20 +2,48 @@ package agent
 
 import (
 	"context"
+	"errors"
 	"log/slog"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/statusharbor/lighthouse/internal/transport"
 )
 
+// Backoff schedule for sendEventsWithBuffer (A1). Three attempts at
+// 1s / 4s / 16s before falling back to the on-disk buffer per
+// design §4.3. Total wall-clock = ~21s on the worst case — tight
+// enough that a check ticking on a 30s interval doesn't queue up
+// behind retries during a brief Console flake.
+var eventsRetrySchedule = []time.Duration{
+	1 * time.Second,
+	4 * time.Second,
+	16 * time.Second,
+}
+
+// degradedThreshold is the number of consecutive heartbeat failures
+// after which sendEvents skips the network attempt and writes
+// straight to the buffer. 3 ticks at the typical 15s interval = ~45s
+// of confirmed downtime; past that point hammering the Console with
+// per-transition retries is wasted work that just slows the agent
+// down for no chance of delivery.
+const degradedThreshold = 3
+
 // Runner orchestrates the agent lifecycle: register, initial-sync,
-// heartbeat ticker, edge-triggered transition emission. Graceful shutdown
-// + buffer + flap protection arrive in subsequent slices.
+// heartbeat ticker, edge-triggered transition emission, on-disk buffer
+// for Console-outage survival, and graceful shutdown.
 type Runner struct {
 	cfg      *Config
 	client   *transport.Client
 	executor CheckExecutor
+
+	// nodeName goes out on every heartbeat. Drives the Console's
+	// lighthouse_active_agents table — one row per (lighthouse,
+	// node_name) for per-pod liveness in multi-instance Lighthouses.
+	// On k8s the value comes from the NODE_NAME downward-API env
+	// var; on bare-metal it's the OS hostname.
+	nodeName string
 
 	// State tracked across the run — committed state per check_id used for
 	// transition detection. mu guards state + etag; the rollups self-lock
@@ -31,14 +59,36 @@ type Runner struct {
 	flap       *flapTracker
 	paused     bool
 	health     *HealthState
+
+	// degradedHeartbeats counts consecutive heartbeat failures. When
+	// it hits degradedThreshold the runner enters degraded mode and
+	// new transitions are routed straight to the disk buffer instead
+	// of attempting the Console (which is demonstrably down). The
+	// first successful heartbeat resets the counter to 0 + triggers
+	// an immediate buffer drain. Atomic so the steady-state read
+	// from sendEvents is lock-free.
+	//
+	// Lives on Runner (not in a sub-struct) because every event-send
+	// path consults it and we want the read to be cheap.
+	degradedHeartbeats atomic.Uint32
+
+	// resyncWG tracks the fire-and-forget runResync goroutines
+	// spawned from SendHeartbeat. Shutdown waits on this WG inside
+	// its caller-provided budget so a SIGTERM mid-resync doesn't
+	// strand transitions that were about to reach the buffer.
+	resyncWG sync.WaitGroup
 }
 
 // NewRunner wires a Runner. The executor abstraction is what tests stub.
-func NewRunner(cfg *Config, client *transport.Client, executor CheckExecutor) *Runner {
+// nodeName goes out on every heartbeat (see Runner.nodeName comment);
+// pass "" in tests that don't care about per-pod liveness — Console
+// treats empty as "skip the lighthouse_active_agents upsert".
+func NewRunner(cfg *Config, client *transport.Client, executor CheckExecutor, nodeName string) *Runner {
 	return &Runner{
 		cfg:        cfg,
 		client:     client,
 		executor:   executor,
+		nodeName:   nodeName,
 		state:      map[string]State{},
 		latency:    newRollup[transport.LatencyEntry](),
 		certExpiry: newRollup[transport.CertExpiryEntry](),
@@ -150,11 +200,146 @@ func (r *Runner) RunSync(ctx context.Context, defs []CheckDefinition, kind SyncK
 	if len(events) == 0 {
 		return nil
 	}
-	_, err := r.client.SendEvents(ctx, transport.EventsRequest{
+	return r.sendEventsWithBuffer(ctx, transport.EventsRequest{
 		SyncKind: string(kind),
 		Events:   events,
 	})
-	return err
+}
+
+// sendEventsWithBuffer is the single entry point for all SendEvents
+// calls. It implements the design §4.3 retry+buffer policy that the
+// raw runtime previously skipped:
+//
+//  1. If we're in degraded mode (enough consecutive heartbeat
+//     failures), skip the network and append directly to the buffer
+//     — the next successful heartbeat will drain it.
+//  2. Otherwise try SendEvents with 3 attempts and the documented
+//     1s / 4s / 16s backoff.
+//  3. If all attempts fail (or the buffer wasn't attached), append
+//     to the buffer so a future drain can replay.
+//
+// Errors are LOGGED at warn level but never returned — the buffer
+// IS the recovery path, and a caller seeing an error from this
+// method would have nothing useful to do with it. Returning success
+// when the network failed but the buffer accepted is honest: from
+// the agent's contract perspective the transition is durable.
+//
+// Callers that explicitly need to know whether the network attempt
+// succeeded (e.g., the shutdown path that wants to skip the
+// final POST when the buffer is the better fallback) should call
+// r.client.SendEvents directly.
+func (r *Runner) sendEventsWithBuffer(ctx context.Context, req transport.EventsRequest) error {
+	if len(req.Events) == 0 {
+		return nil
+	}
+
+	// Degraded-mode short-circuit (A3). Heartbeat has been failing;
+	// don't burn 21s of backoff per transition just to fail again.
+	// Drain happens immediately on the next successful heartbeat.
+	if r.degradedHeartbeats.Load() >= degradedThreshold {
+		return r.bufferEvents(req.Events, "degraded mode")
+	}
+
+	// Three-attempt retry with the documented backoff. ctx
+	// cancellation aborts mid-attempt; on shutdown we'd rather
+	// flush to buffer than block.
+	var lastErr error
+	for i, wait := range eventsRetrySchedule {
+		_, err := r.client.SendEvents(ctx, req)
+		if err == nil {
+			return nil
+		}
+		if errors.Is(err, transport.ErrLighthouseGone) {
+			// No retry — lighthouse is gone, agent should exit.
+			// Caller (Shutdown) cares about this specific error so
+			// the buffer doesn't accumulate junk for a dead
+			// destination.
+			return err
+		}
+		lastErr = err
+		// Don't sleep after the final attempt.
+		if i == len(eventsRetrySchedule)-1 {
+			break
+		}
+		select {
+		case <-ctx.Done():
+			return r.bufferEvents(req.Events, "ctx cancelled mid-retry")
+		case <-time.After(wait):
+		}
+	}
+
+	return r.bufferEvents(req.Events, lastErr.Error())
+}
+
+// bufferEvents appends to the on-disk buffer and logs at warn level.
+// Returns nil even on buffer failure — losing events to a buffer
+// error is the same failure class as losing them to a Console
+// outage, and neither is something the caller can fix.
+func (r *Runner) bufferEvents(events []transport.EventInput, reason string) error {
+	r.mu.Lock()
+	buf := r.buffer
+	r.mu.Unlock()
+
+	if buf == nil {
+		slog.Warn("event send failed and no buffer attached; events dropped",
+			"events", len(events), "reason", reason)
+		return nil
+	}
+	if err := buf.Append(events); err != nil {
+		slog.Warn("event send failed and buffer append also failed",
+			"events", len(events), "reason", reason, "buffer_error", err)
+		return nil
+	}
+	slog.Info("events buffered for later flush",
+		"events", len(events), "reason", reason)
+	return nil
+}
+
+// drainBuffer flushes any buffered events through SendEvents.
+// Called from SendHeartbeat after a successful round-trip so the
+// agent reconnects to the Console and immediately catches up.
+//
+// Best-effort: on partial failure the buffer is gone (Drain
+// removes the file), so any send error here means transitions
+// that survived the outage are lost. We tolerate this because:
+//   - if the heartbeat just succeeded, the Console is back; a
+//     SendEvents failure within seconds is unusual
+//   - if it DOES fail, the next observed transitions will go
+//     through sendEventsWithBuffer which re-creates the buffer
+//   - exposing this error to the caller would force the heartbeat
+//     loop to handle it, complicating the call site without
+//     adding any recovery path
+func (r *Runner) drainBuffer(ctx context.Context) {
+	r.mu.Lock()
+	buf := r.buffer
+	r.mu.Unlock()
+	if buf == nil {
+		return
+	}
+	queued, err := buf.Drain()
+	if err != nil {
+		slog.Warn("buffer drain failed", "error", err)
+		return
+	}
+	if len(queued) == 0 {
+		return
+	}
+	if _, err := r.client.SendEvents(ctx, transport.EventsRequest{
+		// SyncKind="" — buffered transitions, not a sync batch.
+		Events: queued,
+	}); err != nil {
+		// Re-append on send failure so the next heartbeat retries.
+		// This keeps the "no transition is lost on a single
+		// network blip" guarantee even when the buffer was
+		// non-empty going into the failed send.
+		if appErr := buf.Append(queued); appErr != nil {
+			slog.Warn("buffered events lost after drain send failed and re-append failed",
+				"events", len(queued), "send_error", err, "append_error", appErr)
+		}
+		return
+	}
+	slog.Info("buffered events flushed after Console recovered",
+		"events", len(queued))
 }
 
 // RunInitialSync is the boot-time sync (calls RunSync with
@@ -186,6 +371,17 @@ func (r *Runner) commit(checkID string, s State) {
 // ticker) drives cadence; this method just executes one request and
 // applies any returned config updates.
 //
+// Side effects on success:
+//   - degradedHeartbeats counter resets to 0 (A3)
+//   - if a buffer is attached AND was non-empty, drainBuffer fires
+//     synchronously so the recovered Console catches up before the
+//     next observation produces a fresh transition (A1)
+//
+// On failure:
+//   - degradedHeartbeats increments (A3); when it crosses
+//     degradedThreshold, sendEventsWithBuffer starts skipping the
+//     network and going straight to the buffer
+//
 // Returns the response (so callers can plumb config refresh) plus the
 // transport error. ErrLighthouseGone bubbles up so main can exit cleanly.
 func (r *Runner) SendHeartbeat(ctx context.Context) (*transport.HeartbeatResponse, error) {
@@ -198,10 +394,31 @@ func (r *Runner) SendHeartbeat(ctx context.Context) (*transport.HeartbeatRespons
 		ConfigEtag:     etag,
 		CheckLatencies: r.latency.drain(),
 		CertExpiry:     r.certExpiry.drain(),
+		NodeName:       r.nodeName,
 	})
 	if err != nil {
+		// Bump degraded counter on every failure; the threshold
+		// check inside sendEventsWithBuffer reads it lock-free.
+		// ErrLighthouseGone still increments but the caller exits
+		// before it matters.
+		now := r.degradedHeartbeats.Add(1)
+		if now == degradedThreshold {
+			slog.Warn("agent entering degraded mode after consecutive heartbeat failures",
+				"consecutive_failures", now,
+				"threshold", degradedThreshold)
+		}
 		return nil, err
 	}
+
+	// Recovery path: reset the counter + drain. A clean transition
+	// from "degraded for a while" back to "healthy" is the moment
+	// we want to flush whatever the buffer accumulated during the
+	// outage.
+	if prev := r.degradedHeartbeats.Swap(0); prev >= degradedThreshold {
+		slog.Info("agent exited degraded mode; draining buffer",
+			"prior_consecutive_failures", prev)
+	}
+	r.drainBuffer(ctx)
 	// Server may rotate the etag — adopt it so subsequent heartbeats can
 	// short-circuit.
 	r.SetEtag(resp.ConfigEtag)
@@ -223,16 +440,36 @@ func (r *Runner) SendHeartbeat(ctx context.Context) (*transport.HeartbeatRespons
 	// have many checks and observations can take seconds.
 	if resp.RequestFullResync {
 		defs := r.Checks()
-		go r.runResync(ctx, defs, SyncKindResync)
+		r.spawnResync(ctx, defs, SyncKindResync)
 	} else if len(added) > 0 {
-		go r.runResync(ctx, added, SyncKindNewCheck)
+		r.spawnResync(ctx, added, SyncKindNewCheck)
 	}
 	return resp, nil
+}
+
+// spawnResync launches runResync in a goroutine tracked by resyncWG
+// so Shutdown can drain it. Without the WG, a SIGTERM mid-resync
+// would lose every transition the goroutine was about to feed
+// through sendEventsWithBuffer — exactly the kind of "outage =
+// silent data loss" failure the A1 buffer was designed to prevent.
+func (r *Runner) spawnResync(ctx context.Context, defs []CheckDefinition, kind SyncKind) {
+	if len(defs) == 0 {
+		return
+	}
+	r.resyncWG.Add(1)
+	go func() {
+		defer r.resyncWG.Done()
+		r.runResync(ctx, defs, kind)
+	}()
 }
 
 // runResync runs a sync batch for the given subset of checks. Best-effort:
 // failures log and drop. The next heartbeat (which sets the resync flag
 // again on the server when needed) will retry.
+//
+// Routes through sendEventsWithBuffer (via RunSync) so a Console
+// outage during a resync buffers transitions to disk instead of
+// dropping them.
 func (r *Runner) runResync(ctx context.Context, defs []CheckDefinition, kind SyncKind) {
 	if len(defs) == 0 {
 		return
@@ -307,11 +544,13 @@ func (r *Runner) ObserveAndEmit(ctx context.Context, def CheckDefinition) error 
 	if obs.ErrorMessage != "" {
 		ev.ErrorMessage = ptr(obs.ErrorMessage)
 	}
-	_, err := r.client.SendEvents(ctx, transport.EventsRequest{
+	// Route through the retry+buffer wrapper so a Console outage
+	// doesn't lose the transition (A1). In degraded mode this
+	// short-circuits to the buffer directly.
+	return r.sendEventsWithBuffer(ctx, transport.EventsRequest{
 		// SyncKind="" — ordinary state transition.
 		Events: []transport.EventInput{ev},
 	})
-	return err
 }
 
 // AgentVersion is reported on every register / heartbeat. Linker-overridable
@@ -348,6 +587,26 @@ func (r *Runner) SetHealthState(h *HealthState) {
 // always returns nil so main can continue to a clean exit. Pass a context
 // with a small timeout (5s recommended per design).
 func (r *Runner) Shutdown(ctx context.Context, reason string) error {
+	// Step 0: wait for any in-flight resync goroutines to finish so
+	// their transitions reach the buffer before we drain it (A2).
+	// resyncWG.Wait is unbounded by design — the caller's ctx
+	// timeout (30s in cmd/lighthouse) is the wall-clock budget; if
+	// the resyncs haven't completed within the parent budget, the
+	// parent ctx cancels their in-flight HTTP and they exit
+	// promptly via sendEventsWithBuffer's ctx-cancellation branch
+	// (which routes the events to the buffer).
+	resyncDrained := make(chan struct{})
+	go func() {
+		r.resyncWG.Wait()
+		close(resyncDrained)
+	}()
+	select {
+	case <-resyncDrained:
+	case <-ctx.Done():
+		slog.Warn("shutdown ctx ended before resync goroutines drained; in-flight transitions may have routed to buffer or been lost",
+			"reason", reason)
+	}
+
 	r.mu.Lock()
 	buf := r.buffer
 	r.mu.Unlock()
@@ -359,10 +618,24 @@ func (r *Runner) Shutdown(ctx context.Context, reason string) error {
 			// than block shutdown.
 			_ = err
 		} else if len(queued) > 0 {
-			_, _ = r.client.SendEvents(ctx, transport.EventsRequest{
+			// Try once via the Console. On failure re-append to the
+			// buffer so the next agent restart picks them up. The
+			// 1h staleness gate on Drain protects against zombie
+			// events resurfacing after a long downtime.
+			if _, err := r.client.SendEvents(ctx, transport.EventsRequest{
 				// SyncKind="" — buffered transitions, not a sync batch.
 				Events: queued,
-			})
+			}); err != nil {
+				if appErr := buf.Append(queued); appErr != nil {
+					slog.Warn("shutdown flush failed and buffer re-append also failed",
+						"events", len(queued),
+						"send_error", err,
+						"append_error", appErr)
+				} else {
+					slog.Warn("shutdown flush to Console failed; events re-queued for next agent restart",
+						"events", len(queued), "send_error", err)
+				}
+			}
 		}
 	}
 	// Best-effort shutdown notification.

@@ -5,7 +5,6 @@ import (
 	"errors"
 	"log/slog"
 	"math/rand"
-	"reflect"
 	"sync"
 	"time"
 
@@ -113,7 +112,7 @@ func (r *Runner) RunScheduler(ctx context.Context) error {
 				delete(scheduled, id)
 				continue
 			}
-			if !reflect.DeepEqual(sc.def, newDef) {
+			if !sc.def.Equal(newDef) {
 				slog.Info("check definition changed; restarting goroutine",
 					"check_id", id,
 					"old_interval_s", sc.def.IntervalSeconds,

@@ -123,10 +123,123 @@ nodeSelector: {}
 tolerations: []
 affinity: {}
 
+# terminationGracePeriodSeconds — how long k8s waits between SIGTERM
+# and SIGKILL when the pod is being stopped. Default 60s gives the
+# agent room to flush its event buffer, post /shutdown, and (when
+# this binary also runs the API server) drain up to 35s of in-flight
+# async notification dispatches. Kubernetes default of 30s is too
+# short — the drain budget alone is 35s — so leaving this unset
+# would let SIGKILL fire mid-drain on the central pod every time.
+terminationGracePeriodSeconds: 60
+
 # Optional: extra environment variables passed to the container.
 extraEnv: []
 # - name: HTTPS_PROXY
 #   value: http://proxy.internal:3128
+
+# Cluster-shape metrics collector (Phase 2.4) — emits k8s_*
+# series (cluster CPU/memory %, node counts, pod phases per
+# namespace, PVC fill). Runs only on the central StatefulSet pod
+# (the DaemonSet's host_metrics role gates it off). The collector
+# is harmless when these permissions are missing — it just logs and
+# skips — so the knob below only controls whether the chart
+# installs the supporting RBAC.
+#
+# Off by default so `helm upgrade` from an older chart version
+# doesn't silently add a new ClusterRole + Binding to clusters
+# whose security teams audit RBAC drift (FedRAMP, HIPAA, anyone
+# enforcing change control on cluster-scoped permissions). Opt in
+# with --set k8sstats.enabled=true once you've reviewed the
+# permissions table below.
+#
+# RBAC granted when enabled:
+#   - nodes / pods / persistentvolumeclaims : get, list
+#   - nodes/proxy                            : get  (apiserver-proxy
+#     hop into each kubelet's /stats/summary for live usage %).
+#
+# Egress: the central pod needs to reach the apiserver
+# (KUBERNETES_SERVICE_HOST:KUBERNETES_SERVICE_PORT) for both list
+# calls and the /stats/summary fan-out. If networkPolicy.enabled
+# is true add the apiserver endpoint to additionalEgress; on most
+# clusters that's a host network IP, not a Service ClusterIP.
+k8sstats:
+  enabled: false
+
+# Per-node host-metrics DaemonSet (Phase 2.1).
+#
+# Off by default so existing installs keep their single-pod behaviour
+# on upgrade. Enable to ship per-node host metrics (cpu / mem / disk
+# / net per node) without the central pod's containerised view.
+#
+# All DaemonSet pods share the same Secret-mounted token as the
+# central StatefulSet. The Console flips the bound Lighthouse to
+# allow_multi_instance=true on the first registration of any k8s
+# agent, so N pods sharing one token won't 409 each other; per-node
+# rows appear under the Lighthouse's "Active agents" section keyed by
+# spec.nodeName (downward API).
+#
+# PSA caveat: hostPath /proc + /sys mounts are forbidden under the
+# `restricted` Pod Security Admission profile. Label your namespace
+# `baseline` or `privileged`, or supply a custom podSecurityContext /
+# containerSecurityContext that satisfies your cluster's policy.
+daemonset:
+  enabled: false
+  # When true, also mount the node's /sys read-only at /host/sys.
+  # Reserved for a future kernel-stat collector — off by default to
+  # minimise the privilege surface.
+  mountHostSys: false
+  # When true, bind-mount the node's / read-only at /host/root and set
+  # LIGHTHOUSE_HOST_ROOT=/host/root so the per-mount disk collector
+  # statfs()es the host's filesystems instead of the pod's view. Without
+  # this, /proc/mounts (read via the /host/proc bind-mount) lists the
+  # node's mountpoints correctly but syscall.Statfs resolves each path
+  # through the pod's own mount namespace — so /var/lib/docker either
+  # doesn't exist (silently skipped) or returns the container's emptyDir
+  # at the same path.
+  #
+  # On by default once the DaemonSet itself is enabled: a user who flipped
+  # daemonset.enabled=true did so to get per-node metrics, and silently
+  # broken disk numbers are a worse failure mode than a more visible
+  # privilege surface they explicitly opted into. Set to false on
+  # clusters where Pod Security Admission (`restricted` profile) or
+  # OPA/Gatekeeper/Kyverno policies forbid hostPath: / even read-only —
+  # the install otherwise fails to admit the DaemonSet pod.
+  #
+  # Privilege note: hostPath: / read-only lets a compromised pod read
+  # any file on the node (including kubelet-materialised Secrets under
+  # /var/lib/kubelet/pods/*/volumes/...). The collector itself only
+  # calls syscall.Statfs (capacity metadata, no file content), but the
+  # volume mount can't be narrowed to that one syscall.
+  #
+  # Linux-only: the env var is consumed by the Linux host-metrics
+  # collector (statfs path prefixing). The darwin / windows collectors
+  # use sysctl / WMI and ignore it. Windows Kubernetes nodes are not
+  # supported by this chart in general — the agent image is Alpine
+  # (uid 10001, apk-installed CA bundle) so it can only run as a Linux
+  # container on a Linux node.
+  mountHostRoot: true
+  # When true, the pod shares the host's PID namespace. Off by
+  # default; the current /proc snapshot collector doesn't need it.
+  hostPID: false
+  extraEnv: []
+  podLabels: {}
+  podAnnotations: {}
+  # Default DaemonSet tolerations: schedule onto control-plane nodes
+  # too, since host metrics from control-plane nodes are useful.
+  # Override with [] to skip control-plane nodes entirely.
+  tolerations:
+    - key: node-role.kubernetes.io/control-plane
+      operator: Exists
+      effect: NoSchedule
+  nodeSelector: {}
+  affinity: {}
+  # Override resources, podSecurityContext, containerSecurityContext
+  # individually; omitting any falls back to the central StatefulSet
+  # values above. The default container security context (readOnly
+  # rootfs, drop ALL caps) works fine for /proc reads.
+  resources: {}
+  podSecurityContext: {}
+  containerSecurityContext: {}
 
 # PodDisruptionBudget. Off by default — voluntary disruptions
 # (node drains, cluster autoscaler) recreate the pod elsewhere with
@@ -148,7 +261,25 @@ podDisruptionBudget:
 #   - Ingress: TCP on healthz.port from any source (kubelet probes;
 #     kubelet's source IP varies per cluster). Empty if healthz disabled.
 #   - Egress:  UDP/TCP 53 to any (DNS), TCP 443 to 0.0.0.0/0 minus
-#     link-local (Console + HTTPS check targets).
+#     link-local (Console + HTTPS check targets + apiserver Service).
+#
+# When k8sstats.enabled=true the central pod also needs egress to the
+# Kubernetes apiserver. The default 0.0.0.0/0:443 rule covers it
+# because the in-cluster `kubernetes.default.svc` Service is a
+# ClusterIP within that allow. If you tighten the egress to a named
+# Service / CIDR list, add an explicit apiserver rule, e.g.:
+#
+#   additionalEgress:
+#     - to:
+#         - namespaceSelector: { matchLabels: { kubernetes.io/metadata.name: default } }
+#           podSelector:       { matchLabels: { component: kube-apiserver } }
+#       ports:
+#         - { protocol: TCP, port: 443 }
+#
+# Without it the collector silently 0%/0-counter for every k8s_*
+# usage metric — only structural ones (k8s_node_count etc.) keep
+# working because they use a separate code path under the same
+# allow.
 networkPolicy:
   enabled: false
   additionalIngress: []

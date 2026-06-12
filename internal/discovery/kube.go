@@ -32,6 +32,20 @@ const (
 	caPath    = "/var/run/secrets/kubernetes.io/serviceaccount/ca.crt"
 )
 
+// IsKubernetes returns true when the agent is running inside a
+// Kubernetes pod. Cheap, no I/O: just checks for the
+// KUBERNETES_SERVICE_HOST env var that kubelet injects into every pod.
+//
+// Note this is a lower bar than "can we talk to the apiserver" —
+// inClusterClient (below) also requires the ServiceAccount token file
+// and a valid CA bundle. The registration handler only needs to know
+// "are we in a pod" to decide whether to flip the Lighthouse's
+// allow_multi_instance flag, not whether discovery itself will work,
+// so the env-var probe is the right primitive here.
+func IsKubernetes() bool {
+	return os.Getenv("KUBERNETES_SERVICE_HOST") != ""
+}
+
 // inClusterClient builds a client from the standard service-account
 // projection. Returns (nil, nil) when not running in a cluster (the
 // agent treats this as "discovery silently disabled").

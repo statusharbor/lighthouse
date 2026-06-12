@@ -45,7 +45,7 @@ func TestRegister_HappyPath(t *testing.T) {
 		})
 	})
 
-	c := NewClient(srv.URL, "lh_test")
+	c := NewClient(srv.URL, "lh_test", "")
 	resp, err := c.Register(context.Background(), RegisterRequest{
 		AgentVersion:  "0.1.0",
 		AgentHostname: "test-host",
@@ -66,7 +66,7 @@ func TestRegister_410ReturnsErrLighthouseGone(t *testing.T) {
 		http.Error(w, `{"error":"lighthouse has been deleted"}`, http.StatusGone)
 	})
 
-	c := NewClient(srv.URL, "lh_test")
+	c := NewClient(srv.URL, "lh_test", "")
 	_, err := c.Register(context.Background(), RegisterRequest{AgentVersion: "0.1.0", AgentHostname: "h"})
 	if !errors.Is(err, ErrLighthouseGone) {
 		t.Errorf("expected ErrLighthouseGone, got %v", err)
@@ -83,7 +83,7 @@ func TestRegister_401ReturnsErrLighthouseGone(t *testing.T) {
 		http.Error(w, `{"error":"invalid token"}`, http.StatusUnauthorized)
 	})
 
-	c := NewClient(srv.URL, "wrong")
+	c := NewClient(srv.URL, "wrong", "")
 	_, err := c.Register(context.Background(), RegisterRequest{AgentVersion: "0.1.0", AgentHostname: "h"})
 	if !errors.Is(err, ErrLighthouseGone) {
 		t.Errorf("expected ErrLighthouseGone on 401, got %v", err)
@@ -92,7 +92,7 @@ func TestRegister_401ReturnsErrLighthouseGone(t *testing.T) {
 
 func TestRegister_NetworkErrorPropagates(t *testing.T) {
 	// Point at a non-listening port — should produce a network error.
-	c := NewClient("http://127.0.0.1:1", "lh_test")
+	c := NewClient("http://127.0.0.1:1", "lh_test", "")
 	_, err := c.Register(context.Background(), RegisterRequest{AgentVersion: "0.1.0", AgentHostname: "h"})
 	if err == nil {
 		t.Fatal("expected network error")
@@ -125,7 +125,7 @@ func TestSendEvents_HappyPath(t *testing.T) {
 		_ = json.NewEncoder(w).Encode(EventsResponse{Received: 2})
 	})
 
-	c := NewClient(srv.URL, "lh_test")
+	c := NewClient(srv.URL, "lh_test", "")
 	resp, err := c.SendEvents(context.Background(), EventsRequest{
 		SyncKind: "initial",
 		Events: []EventInput{
@@ -146,7 +146,7 @@ func TestSendEvents_410ReturnsErrLighthouseGone(t *testing.T) {
 		http.Error(w, `{"error":"deleted"}`, http.StatusGone)
 	})
 
-	c := NewClient(srv.URL, "lh_test")
+	c := NewClient(srv.URL, "lh_test", "")
 	_, err := c.SendEvents(context.Background(), EventsRequest{Events: []EventInput{{CheckID: "x", NewState: "up"}}})
 	if !errors.Is(err, ErrLighthouseGone) {
 		t.Errorf("expected ErrLighthouseGone, got %v", err)
@@ -157,7 +157,7 @@ func TestSendEvents_400IsNotErrLighthouseGone(t *testing.T) {
 	srv := newMockServer(t, func(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, `{"error":"cross-tenant check_id"}`, http.StatusBadRequest)
 	})
-	c := NewClient(srv.URL, "lh_test")
+	c := NewClient(srv.URL, "lh_test", "")
 	_, err := c.SendEvents(context.Background(), EventsRequest{Events: []EventInput{{CheckID: "x", NewState: "up"}}})
 	if err == nil {
 		t.Fatal("expected error on 400")
@@ -190,7 +190,7 @@ func TestHeartbeat_HappyPath_SendsLatenciesAndEtag(t *testing.T) {
 		})
 	})
 
-	c := NewClient(srv.URL, "lh_test")
+	c := NewClient(srv.URL, "lh_test", "")
 	resp, err := c.Heartbeat(context.Background(), HeartbeatRequest{
 		AgentVersion: "0.1.0",
 		ConfigEtag:   "abc123",
@@ -210,7 +210,7 @@ func TestHeartbeat_410ReturnsErrLighthouseGone(t *testing.T) {
 	srv := newMockServer(t, func(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, `{"error":"deleted"}`, http.StatusGone)
 	})
-	c := NewClient(srv.URL, "lh_test")
+	c := NewClient(srv.URL, "lh_test", "")
 	_, err := c.Heartbeat(context.Background(), HeartbeatRequest{})
 	if !errors.Is(err, ErrLighthouseGone) {
 		t.Errorf("expected ErrLighthouseGone, got %v", err)
@@ -227,7 +227,7 @@ func TestShutdown_HappyPathPostsReason(t *testing.T) {
 		w.WriteHeader(http.StatusNoContent)
 	})
 
-	c := NewClient(srv.URL, "lh_test")
+	c := NewClient(srv.URL, "lh_test", "")
 	if err := c.Shutdown(context.Background(), ShutdownRequest{Reason: "sigterm"}); err != nil {
 		t.Fatal(err)
 	}
@@ -240,7 +240,7 @@ func TestShutdown_410ReturnsErrLighthouseGone(t *testing.T) {
 	srv := newMockServer(t, func(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, `{"error":"deleted"}`, http.StatusGone)
 	})
-	c := NewClient(srv.URL, "lh_test")
+	c := NewClient(srv.URL, "lh_test", "")
 	err := c.Shutdown(context.Background(), ShutdownRequest{Reason: "sigterm"})
 	if !errors.Is(err, ErrLighthouseGone) {
 		t.Errorf("expected ErrLighthouseGone, got %v", err)

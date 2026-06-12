@@ -9,23 +9,49 @@ import "time"
 // RegisterRequest is what the agent posts to /api/lighthouse/v1/register on
 // startup. Per design §4.1: the lighthouse_id is NOT sent — server resolves
 // it from the bound token.
+//
+// Runtime is "kubernetes" when the agent's discovery probe sees
+// KUBERNETES_SERVICE_HOST, "bare_metal" otherwise. Drives the server's
+// sticky-update of lighthouses.allow_multi_instance — see
+// docs/victoriametrics/lighthause/PLAN.md §1.3. Empty value (which would
+// only come from an old agent that doesn't know about this field) is
+// treated as "skip the sticky-update"; never lower a Lighthouse's flag
+// based on an empty runtime.
 type RegisterRequest struct {
 	AgentVersion  string `json:"agent_version"`
 	AgentHostname string `json:"agent_hostname"`
+	Runtime       string `json:"runtime,omitempty"`
+}
+
+// HostMetricsConfig is the optional /register response field that gates the
+// host-metrics collector (design §3.1). Three states the agent must honor:
+//
+//   - nil pointer (field omitted) — plan does not support metrics. Never collect.
+//   - {Enabled: false}             — plan supports it but team paused. Stop now.
+//   - {Enabled: true, …}           — collect every IntervalSeconds.
+//
+// Distinct from absence-of-field because an already-running collector needs an
+// explicit "stop" signal rather than treating a missing field as "no change".
+// Older Console builds simply omit the field and older agents ignore it
+// (LIGHTHOUSE_API.md v1-stability rule: new optional fields don't bump v).
+type HostMetricsConfig struct {
+	Enabled         bool `json:"enabled"`
+	IntervalSeconds int  `json:"interval_seconds"`
 }
 
 // RegisterResponse is what the Console returns from /register. Carries the
 // per-agent operating parameters (heartbeat cadence, flap threshold) plus
 // the initial check set.
 type RegisterResponse struct {
-	LighthouseID             string     `json:"lighthouse_id"`
-	Name                     string     `json:"name"`
-	Host                     string     `json:"host"`
-	Paused                   bool       `json:"paused"`
-	HeartbeatIntervalSeconds int        `json:"heartbeat_interval_seconds"`
-	FlapProtectionThreshold  int        `json:"flap_protection_threshold"`
-	ConfigEtag               string     `json:"config_etag"`
-	Checks                   []CheckDef `json:"checks"`
+	LighthouseID             string             `json:"lighthouse_id"`
+	Name                     string             `json:"name"`
+	Host                     string             `json:"host"`
+	Paused                   bool               `json:"paused"`
+	HeartbeatIntervalSeconds int                `json:"heartbeat_interval_seconds"`
+	FlapProtectionThreshold  int                `json:"flap_protection_threshold"`
+	ConfigEtag               string             `json:"config_etag"`
+	Checks                   []CheckDef         `json:"checks"`
+	HostMetrics              *HostMetricsConfig `json:"host_metrics,omitempty"`
 }
 
 // HeaderPair is one custom request header the Console wants the agent to
@@ -116,6 +142,14 @@ type HeartbeatRequest struct {
 	ConfigEtag     string                     `json:"config_etag,omitempty"`
 	CheckLatencies map[string]LatencyEntry    `json:"check_latencies,omitempty"`
 	CertExpiry     map[string]CertExpiryEntry `json:"cert_expiry,omitempty"`
+	// NodeName identifies which node this agent pod is running on (or
+	// the host's hostname on bare-metal). Drives the Console's
+	// lighthouse_active_agents table — one row per (lighthouse, node)
+	// for per-pod liveness in multi-instance Lighthouses. Empty when
+	// the agent can't determine its node name; Console treats that as
+	// "skip the per-node tracking" (bare-metal single-instance flow
+	// keeps working).
+	NodeName string `json:"node_name,omitempty"`
 }
 
 // LatencyEntry is a sparse per-check latency snapshot included in the

@@ -1,0 +1,50 @@
+{{- if .Values.k8sstats.enabled }}
+# RBAC for the central pod's k8sstats collector (Phase 2.4).
+#
+# Grants the bare minimum the apiserver-proxy code in
+# lighthouse/internal/agent/k8sstats needs:
+#
+#   - nodes        : list   — fleet size + per-node allocatable
+#   - pods         : list   — per-namespace phase counts
+#   - persistentvolumeclaims : list — PVC count
+#   - nodes/proxy  : get    — fan-out to each kubelet's
+#                              /stats/summary endpoint for live
+#                              CPU / memory / disk / network /
+#                              PVC usage percentages.
+#
+# This is a separate ClusterRole from the discovery one so
+# customers running k8sstats but with discovery off (or namespace-
+# scoped) get exactly the cluster-wide permissions they need —
+# no more, no less. The DaemonSet pods don't run the collector
+# (LIGHTHOUSE_ROLE=host_metrics gates it off) so they don't need
+# these permissions in practice; we bind to the shared
+# ServiceAccount anyway because the central pod is the consumer.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: {{ include "lighthouse.fullname" . }}-k8sstats
+  labels:
+    {{- include "lighthouse.labels" . | nindent 4 }}
+rules:
+  - apiGroups: [""]
+    resources: ["nodes", "pods", "persistentvolumeclaims"]
+    verbs: ["get", "list"]
+  - apiGroups: [""]
+    resources: ["nodes/proxy"]
+    verbs: ["get"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: {{ include "lighthouse.fullname" . }}-k8sstats
+  labels:
+    {{- include "lighthouse.labels" . | nindent 4 }}
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: {{ include "lighthouse.fullname" . }}-k8sstats
+subjects:
+  - kind: ServiceAccount
+    name: {{ include "lighthouse.serviceAccountName" . }}
+    namespace: {{ .Release.Namespace }}
+{{- end }}

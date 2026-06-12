@@ -98,8 +98,8 @@ func TestLoadFile_MissingFileFallsBackToEnv(t *testing.T) {
 	if cfg.Token != "lh_env_only" {
 		t.Errorf("Token = %q", cfg.Token)
 	}
-	if cfg.Agent.DataDir != DefaultDataDir {
-		t.Errorf("defaults should still apply, got DataDir=%q", cfg.Agent.DataDir)
+	if cfg.Agent.DataDir != DefaultDataDirForOS() {
+		t.Errorf("defaults should still apply, got DataDir=%q want=%q", cfg.Agent.DataDir, DefaultDataDirForOS())
 	}
 }
 
@@ -124,8 +124,8 @@ func TestLoad_AppliesDefaults(t *testing.T) {
 	if cfg.Token != "lh_abc" {
 		t.Errorf("Token = %q", cfg.Token)
 	}
-	if cfg.Agent.DataDir != DefaultDataDir {
-		t.Errorf("DataDir default not applied: %q", cfg.Agent.DataDir)
+	if cfg.Agent.DataDir != DefaultDataDirForOS() {
+		t.Errorf("DataDir default not applied: %q want=%q", cfg.Agent.DataDir, DefaultDataDirForOS())
 	}
 	if cfg.Agent.MaxConcurrentChecks != DefaultMaxConcurrentChecks {
 		t.Errorf("MaxConcurrentChecks default not applied: %d", cfg.Agent.MaxConcurrentChecks)
@@ -164,5 +164,35 @@ func TestLoad_RejectsMalformedYAML(t *testing.T) {
 	_, err := Load(strings.NewReader("not: : valid: yaml:::"))
 	if err == nil {
 		t.Fatal("expected parse error")
+	}
+}
+
+// Role validation: an unknown value (typo, leftover from an old
+// spec) must hard-fail rather than silently default to "central".
+// A DaemonSet pod running checks would multiply every check across
+// every node — production impact is worse than the crash loop.
+func TestLoad_RejectsUnknownRole(t *testing.T) {
+	yamlIn := "token: lh_x\nagent:\n  role: hostmetrics\n" // missing underscore
+	_, err := Load(strings.NewReader(yamlIn))
+	if err == nil {
+		t.Fatal("expected error on unknown role; got nil")
+	}
+}
+
+// Empty role and the two recognised values must all parse — empty
+// canonicalises to "central" inside IsHostMetricsOnly.
+func TestLoad_AcceptsKnownRoles(t *testing.T) {
+	cases := []string{"", RoleCentral, RoleHostMetrics}
+	for _, role := range cases {
+		t.Run(role, func(t *testing.T) {
+			yamlIn := "token: lh_x\nagent:\n  role: \"" + role + "\"\n"
+			cfg, err := Load(strings.NewReader(yamlIn))
+			if err != nil {
+				t.Fatalf("role=%q: %v", role, err)
+			}
+			if cfg.Agent.Role != role {
+				t.Errorf("Role = %q, want %q", cfg.Agent.Role, role)
+			}
+		})
 	}
 }

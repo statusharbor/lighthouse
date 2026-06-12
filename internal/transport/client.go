@@ -7,7 +7,9 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
+	"strconv"
 	"time"
 )
 
@@ -18,6 +20,15 @@ type Client struct {
 	baseURL string
 	token   string
 	httpc   *http.Client
+
+	// Per-instance identity. instanceID is a stable UUID persisted under
+	// <DataDir>/instance.id; processStartedAt is set at NewClient and used
+	// to compute X-Lighthouse-Process-Uptime on each request. Together
+	// they drive the Console's single-active-instance claim + the
+	// behavioral detection signals (source-IP change, uptime regression)
+	// — see /api/lighthouse/v1/* middleware in status-harbor.
+	instanceID       string
+	processStartedAt time.Time
 }
 
 // ErrLighthouseGone signals that the Console says this agent's lighthouse
@@ -26,18 +37,73 @@ type Client struct {
 //   - 401 Unauthorized — the current hard-delete contract; deleting a
 //     lighthouse cascades the bound api_token via FK, so the next agent
 //     call's bearer no longer resolves.
+//
 // The agent must exit cleanly in either case.
 var ErrLighthouseGone = errors.New("lighthouse has been deleted")
 
 // NewClient builds a Client. baseURL is the Console root — for production
 // this is `https://lighthouse.statusharbor.io`; tests pass an httptest URL.
-func NewClient(baseURL, token string) *Client {
+//
+// instanceID is the stable per-install UUID from <DataDir>/instance.id;
+// pass "" in tests or when callers don't want to participate in the
+// single-active-instance claim (the Console treats empty as "don't
+// enforce"). Process uptime is computed from time.Now() at NewClient,
+// which matches the agent's process lifetime — the binary is restarted
+// when the systemd / Windows service unit cycles.
+func NewClient(baseURL, token, instanceID string) *Client {
 	return &Client{
-		baseURL: baseURL,
-		token:   token,
+		baseURL:          baseURL,
+		token:            token,
+		instanceID:       instanceID,
+		processStartedAt: time.Now().UTC(),
 		httpc: &http.Client{
-			Timeout: 30 * time.Second,
+			// Whole-request budget. The transport-level timeouts
+			// below carve it up into stage budgets so a stalled
+			// peer at any single stage gives up quickly rather
+			// than burning the full 30s.
+			Timeout:   30 * time.Second,
+			Transport: newAgentTransport(),
 		},
+	}
+}
+
+// newAgentTransport returns a pinned http.Transport so future
+// std-lib bumps don't change behaviour silently and so we own the
+// assumptions we make about the Console's behaviour.
+//
+// Stage budgets — pre-flight tighter than the wall-clock 30s above:
+//
+//   - Dial:                   5s  (DNS + TCP connect)
+//   - TLS handshake:          5s  (verify the cert chain)
+//   - Response headers:       10s (Console accepted bytes; awaiting
+//                                  status + headers)
+//   - Idle conn lifetime:     60s (matches the Console's typical
+//                                  keepalive; avoids serving a
+//                                  request through a half-closed
+//                                  socket)
+//
+// MaxResponseHeaderBytes caps the headers section at 256 KiB so a
+// pathological / malicious Console can't stream gigabytes of header
+// at us before we notice. The body has its own io.Reader-level
+// bound elsewhere; this is just the headers ceiling.
+//
+// HTTP/2 is force-attempted so a Console behind a Gateway / L7
+// load balancer doesn't pay the per-request TCP + TLS cost.
+func newAgentTransport() *http.Transport {
+	return &http.Transport{
+		DialContext: (&net.Dialer{
+			Timeout:   5 * time.Second,
+			KeepAlive: 30 * time.Second,
+		}).DialContext,
+		TLSHandshakeTimeout:    5 * time.Second,
+		ResponseHeaderTimeout:  10 * time.Second,
+		MaxResponseHeaderBytes: 256 * 1024,
+		IdleConnTimeout:        60 * time.Second,
+		MaxIdleConnsPerHost:    4, // small fleet of concurrent
+		// goroutines (heartbeat, events, host metrics, discovery
+		// snapshot) all hitting one Console host. 4 keeps the
+		// pool warm without spawning excess sockets.
+		ForceAttemptHTTP2: true,
 	}
 }
 
@@ -112,6 +178,7 @@ func (c *Client) postJSON(ctx context.Context, path string, in any, out any, exp
 	}
 	httpReq.Header.Set("Authorization", "Bearer "+c.token)
 	httpReq.Header.Set("Content-Type", "application/json")
+	c.setInstanceHeaders(httpReq)
 
 	resp, err := c.httpc.Do(httpReq)
 	if err != nil {
@@ -137,4 +204,30 @@ func (c *Client) postJSON(ctx context.Context, path string, in any, out any, exp
 		return fmt.Errorf("decode %s response: %w", path, err)
 	}
 	return nil
+}
+
+// setInstanceHeaders stamps the per-instance claim + soft-signal headers
+// the Console's lighthouse-token middleware reads:
+//
+//	X-Lighthouse-Instance-Id      — stable UUID, drives the single-active
+//	                                claim. Empty means "agent didn't
+//	                                participate in the claim"; Console
+//	                                treats that as compatible with any
+//	                                held claim and skips enforcement.
+//	X-Lighthouse-Process-Uptime   — integer seconds since process start.
+//	                                Used by the Console to detect a
+//	                                non-monotonic uptime (token copied
+//	                                to a freshly-booted machine starts
+//	                                the counter over).
+func (c *Client) setInstanceHeaders(req *http.Request) {
+	if c.instanceID != "" {
+		req.Header.Set("X-Lighthouse-Instance-Id", c.instanceID)
+	}
+	if !c.processStartedAt.IsZero() {
+		secs := int64(time.Since(c.processStartedAt).Seconds())
+		if secs < 0 {
+			secs = 0
+		}
+		req.Header.Set("X-Lighthouse-Process-Uptime", strconv.FormatInt(secs, 10))
+	}
 }

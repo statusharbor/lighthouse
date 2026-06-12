@@ -1,0 +1,191 @@
+{{- if .Values.daemonset.enabled }}
+# Per-node host-metrics workload (Phase 2.1).
+#
+# Runs the same agent image as the central StatefulSet but with
+# LIGHTHOUSE_ROLE=host_metrics — the check scheduler and Ingress
+# discovery watcher are skipped (the central pod owns those), leaving
+# just the registration + heartbeat + host-metrics ticker. Each pod
+# reads the node's /proc through a hostPath mount (LIGHTHOUSE_PROC_ROOT
+# = /host/proc) so cpu / mem / disk / net metrics reflect the node
+# rather than the container's pid namespace.
+#
+# All pods share the same Secret-mounted token. The Console flips the
+# bound Lighthouse to allow_multi_instance=true on the first
+# registration of a k8s agent (sticky-update from migration 131), so
+# N pods sharing one token don't 409 each other and each one shows up
+# as a separate row in lighthouse_active_agents keyed by node_name.
+#
+# Pod Security Admission caveat: the hostPath mounts below are forbidden
+# under the `restricted` PSA profile. Customers either label the
+# namespace `baseline` / `privileged` or supply a custom
+# SecurityContext via daemonset.podSecurityContext / extraVolumes.
+apiVersion: apps/v1
+kind: DaemonSet
+metadata:
+  name: {{ include "lighthouse.fullname" . }}-node
+  labels:
+    {{- include "lighthouse.labels" . | nindent 4 }}
+    app.kubernetes.io/component: node-agent
+spec:
+  selector:
+    matchLabels:
+      {{- include "lighthouse.selectorLabels" . | nindent 6 }}
+      app.kubernetes.io/component: node-agent
+  template:
+    metadata:
+      labels:
+        {{- include "lighthouse.labels" . | nindent 8 }}
+        app.kubernetes.io/component: node-agent
+        {{- with .Values.daemonset.podLabels }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
+      {{- with .Values.daemonset.podAnnotations }}
+      annotations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+    spec:
+      # 60s default — same rationale as the StatefulSet template:
+      # the agent's shutdown drain (in-flight checks, event buffer
+      # flush, /shutdown POST) needs more than k8s's default 30s
+      # SIGKILL window. DaemonSet pods drain faster than the
+      # central StatefulSet (no discovery snapshot to wait on, no
+      # check scheduler running) but they still hit the same /proc
+      # collector tick + buffer flush path.
+      terminationGracePeriodSeconds: {{ .Values.terminationGracePeriodSeconds }}
+      serviceAccountName: {{ include "lighthouse.serviceAccountName" . }}
+      {{- with .Values.imagePullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      # hostPID lets the agent see the node's process tree if the
+      # collector ever needs it; for the current /proc snapshot
+      # collector we only need the hostPath mount, but flipping
+      # hostPID off here without a values-knob would be a breaking
+      # change later.
+      hostPID: {{ .Values.daemonset.hostPID | default false }}
+      {{- with .Values.daemonset.podSecurityContext | default .Values.podSecurityContext }}
+      securityContext:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      containers:
+        - name: lighthouse
+          image: "{{ .Values.image.repository }}:{{ .Values.image.tag | default .Chart.AppVersion }}"
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          args:
+            - "-config"
+            - "/etc/lighthouse/lighthouse.yaml"
+          env:
+            - name: LIGHTHOUSE_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  {{- $secret := include "lighthouse.tokenSecret" . | fromYaml }}
+                  name: {{ $secret.name }}
+                  key: {{ $secret.key }}
+            - name: LIGHTHOUSE_ROLE
+              value: "host_metrics"
+            - name: LIGHTHOUSE_PROC_ROOT
+              value: "/host/proc"
+            {{- if .Values.daemonset.mountHostRoot }}
+            - name: LIGHTHOUSE_HOST_ROOT
+              value: "/host/root"
+            {{- end }}
+            # NODE_NAME drives lighthouse_active_agents row identity on
+            # the Console — must match how the central StatefulSet's
+            # heartbeat reports its node. Sourced from the downward API
+            # so we get the actual scheduling node, not pod hostname.
+            - name: NODE_NAME
+              valueFrom:
+                fieldRef:
+                  fieldPath: spec.nodeName
+            {{- with .Values.daemonset.extraEnv }}
+            {{- toYaml . | nindent 12 }}
+            {{- end }}
+          {{- if .Values.healthz.enabled }}
+          ports:
+            - name: healthz
+              containerPort: {{ .Values.healthz.port }}
+              protocol: TCP
+          livenessProbe:
+            httpGet:
+              path: /healthz/live
+              port: healthz
+            {{- toYaml .Values.healthz.livenessProbe | nindent 12 }}
+          readinessProbe:
+            httpGet:
+              path: /healthz/ready
+              port: healthz
+            {{- toYaml .Values.healthz.readinessProbe | nindent 12 }}
+          {{- end }}
+          volumeMounts:
+            - name: data
+              mountPath: /var/lib/lighthouse
+            - name: tmp
+              mountPath: /tmp
+            - name: config
+              mountPath: /etc/lighthouse
+              readOnly: true
+            - name: host-proc
+              mountPath: /host/proc
+              readOnly: true
+            {{- if .Values.daemonset.mountHostSys }}
+            - name: host-sys
+              mountPath: /host/sys
+              readOnly: true
+            {{- end }}
+            {{- if .Values.daemonset.mountHostRoot }}
+            - name: host-root
+              mountPath: /host/root
+              readOnly: true
+              mountPropagation: HostToContainer
+            {{- end }}
+          resources:
+            {{- toYaml (.Values.daemonset.resources | default .Values.resources) | nindent 12 }}
+          {{- with .Values.daemonset.containerSecurityContext | default .Values.containerSecurityContext }}
+          securityContext:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+      volumes:
+        # DaemonSet pods are ephemeral — emptyDir for the data dir is
+        # fine. The instance.id file regenerates on each pod start,
+        # which is exactly what we want for the per-node ledger.
+        - name: data
+          emptyDir: {}
+        - name: tmp
+          emptyDir: {}
+        - name: config
+          configMap:
+            name: {{ printf "%s-config" (include "lighthouse.fullname" .) }}
+        - name: host-proc
+          hostPath:
+            path: /proc
+            type: Directory
+        {{- if .Values.daemonset.mountHostSys }}
+        - name: host-sys
+          hostPath:
+            path: /sys
+            type: Directory
+        {{- end }}
+        {{- if .Values.daemonset.mountHostRoot }}
+        # mountPropagation: HostToContainer on the volumeMount above so
+        # any sub-mounts on the host (e.g. /var/lib/docker as a separate
+        # filesystem) propagate into /host/root inside the pod —
+        # otherwise statfs() inside the bind-mount only sees the root
+        # filesystem and silently skips every sub-mount.
+        - name: host-root
+          hostPath:
+            path: /
+            type: Directory
+        {{- end }}
+      {{- with .Values.daemonset.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.daemonset.tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.daemonset.affinity }}
+      affinity:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+{{- end }}

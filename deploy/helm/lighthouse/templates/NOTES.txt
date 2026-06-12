@@ -1,4 +1,4 @@
-Lighthouse {{ .Chart.AppVersion }} installed in namespace "{{ .Release.Namespace }}".
+Lighthouse {{ .Chart.AppVersion }} installed in namespace "{{ .Release.Namespace }}" (chart {{ .Chart.Version }}).
 
 Watch the agent register with the Console:
   kubectl logs -n {{ .Release.Namespace }} -l app.kubernetes.io/instance={{ .Release.Name }} -f
@@ -39,6 +39,66 @@ To opt out entirely:
 Discovery is disabled. To turn it on later (lets the agent suggest
 ingress endpoints to monitor):
   --set discovery.enabled=true
+{{- end }}
+
+{{- if not .Values.k8sstats.enabled }}
+
+Cluster-shape metrics (k8s_node_count, k8s_pods_running,
+k8s_node_cpu_used_percent, etc.) are NOT being collected — the
+k8sstats collector needs a cluster-scoped ClusterRole that this
+chart only installs when explicitly opted in:
+  --set k8sstats.enabled=true
+
+The added RBAC is: nodes/pods/PVCs list + nodes/proxy get (the
+proxy verb is what reaches each kubelet's /stats/summary). Skip if
+your security team audits cluster-scoped RBAC drift; the agent
+still works without it — you just won't see the k8s_* metric
+family on the Console.
+{{- end }}
+
+{{- if .Values.daemonset.enabled }}
+
+DaemonSet (per-node host metrics) is enabled. Each node now runs a
+pod reading /host/proc through a hostPath mount. Note: the
+`restricted` Pod Security Admission profile forbids hostPath
+volumes — label the namespace accordingly:
+  kubectl label ns {{ .Release.Namespace }} pod-security.kubernetes.io/enforce=baseline
+{{- end }}
+
+{{- $resolvedTag := .Values.image.tag | default .Chart.AppVersion }}
+{{- $needsNewAgent := or .Values.daemonset.enabled .Values.k8sstats.enabled }}
+{{- if and $needsNewAgent (semverCompare "<1.12.0" $resolvedTag) }}
+
+  ⚠  AGENT VERSION COMPATIBILITY
+  ────────────────────────────────
+  image.tag resolves to "{{ $resolvedTag }}" but you enabled
+  features that require agent 1.12.0 or later. Older agents
+  silently ignore the new env vars + register fields, so the
+  features installed by this chart won't actually work:
+
+  {{- if .Values.daemonset.enabled }}
+
+  DaemonSet (daemonset.enabled=true):
+    - LIGHTHOUSE_ROLE=host_metrics is unknown to old agents →
+      DaemonSet pods run the check scheduler + discovery watcher
+      (every check fires from every node — N× duplicate traffic
+      against your targets).
+    - LIGHTHOUSE_PROC_ROOT=/host/proc is silently ignored →
+      reported CPU/mem/disk reflect the container's view, not the
+      node's.
+    - DaemonSet pods don't send runtime=kubernetes during register
+      → allow_multi_instance never flips → pods 409 each other on
+      the instance-id claim and CrashLoopBackOff.
+  {{- end }}
+  {{- if .Values.k8sstats.enabled }}
+
+  k8sstats (k8sstats.enabled=true):
+    - The cluster-shape collector lives in agent 1.12.0+. RBAC is
+      installed but unused → no k8s_* metrics on the Console.
+  {{- end }}
+
+  Pin a 1.12.0+ image with:
+    --set image.tag=1.12.0
 {{- end }}
 
 {{- if not .Values.existingSecret.name }}

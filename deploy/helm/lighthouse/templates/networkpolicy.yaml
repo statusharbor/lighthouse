@@ -30,7 +30,15 @@ spec:
           port: 53
         - protocol: TCP
           port: 53
-    # Outbound HTTPS — covers the Console plus any HTTPS check targets.
+    # Outbound HTTPS — covers:
+    #   - The Status Harbor Console
+    #   - HTTPS check targets
+    #   - When k8sstats.enabled=true: the in-cluster Kubernetes
+    #     apiserver (kubernetes.default.svc — a ClusterIP Service
+    #     within this 0.0.0.0/0 allow). The collector reaches each
+    #     kubelet via the apiserver proxy
+    #     (/api/v1/nodes/{name}/proxy/stats/summary), so the apiserver
+    #     egress is the only k8s-internal path required.
     # Excludes link-local / instance-metadata (169.254.0.0/16) by default
     # to prevent SSRF-style misuse from check definitions.
     - to:
