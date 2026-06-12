@@ -221,10 +221,10 @@ func (s *HTTPHostMetricsSender) Emit(ctx context.Context, samples []HostSample) 
 	if err != nil {
 		return fmt.Errorf("post host-metrics: %w", err)
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 
-	switch {
-	case resp.StatusCode == http.StatusAccepted || resp.StatusCode == http.StatusNoContent || resp.StatusCode == http.StatusOK:
+	switch resp.StatusCode {
+	case http.StatusAccepted, http.StatusNoContent, http.StatusOK:
 		return nil
 	default:
 		body, _ := io.ReadAll(io.LimitReader(resp.Body, 1<<10))

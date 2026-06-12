@@ -295,7 +295,7 @@ func readMeminfo(procRoot string) (meminfo, error) {
 	if err != nil {
 		return meminfo{}, err
 	}
-	defer f.Close()
+	defer func() { _ = f.Close() }()
 
 	var total, available, swapTotal, swapFree uint64
 	sc := bufio.NewScanner(f)
@@ -362,7 +362,7 @@ func readCPUSnapshot(procRoot string) (*cpuSnapshot, error) {
 	if err != nil {
 		return nil, err
 	}
-	defer f.Close()
+	defer func() { _ = f.Close() }()
 
 	snap := &cpuSnapshot{at: time.Now()}
 	sc := bufio.NewScanner(f)
@@ -444,7 +444,7 @@ func readMounts(procRoot string) ([]string, error) {
 	if err != nil {
 		return nil, err
 	}
-	defer f.Close()
+	defer func() { _ = f.Close() }()
 
 	skip := map[string]struct{}{
 		"proc": {}, "sysfs": {}, "cgroup": {}, "cgroup2": {}, "devpts": {},
@@ -541,7 +541,7 @@ func readNetDev(procRoot string) ([]netStats, error) {
 	if err != nil {
 		return nil, err
 	}
-	defer f.Close()
+	defer func() { _ = f.Close() }()
 
 	out := make([]netStats, 0, 8)
 	sc := bufio.NewScanner(f)
@@ -656,7 +656,7 @@ func readDiskstats(procRoot string) ([]diskIOStats, error) {
 	if err != nil {
 		return nil, err
 	}
-	defer f.Close()
+	defer func() { _ = f.Close() }()
 
 	out := make([]diskIOStats, 0, 4)
 	sc := bufio.NewScanner(f)
