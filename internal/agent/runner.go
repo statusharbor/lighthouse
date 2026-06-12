@@ -395,12 +395,25 @@ func (r *Runner) SendHeartbeat(ctx context.Context) (*transport.HeartbeatRespons
 	etag := r.etag
 	r.mu.Unlock()
 
+	// Role goes out on every heartbeat alongside NodeName so the Console
+	// can label the central pod separately from per-node reporters in
+	// its "Active agents" panel. Defaults to "central" when the role
+	// field is empty (older config OR a bare-metal install that never
+	// set LIGHTHOUSE_ROLE), since on bare-metal the only agent IS the
+	// central one — preserves backwards compatibility with rows that
+	// landed before this column existed.
+	role := r.cfg.Agent.Role
+	if role == "" {
+		role = RoleCentral
+	}
+
 	resp, err := r.client.Heartbeat(ctx, transport.HeartbeatRequest{
 		AgentVersion:   AgentVersion,
 		ConfigEtag:     etag,
 		CheckLatencies: r.latency.drain(),
 		CertExpiry:     r.certExpiry.drain(),
 		NodeName:       r.nodeName,
+		Role:           role,
 	})
 	if err != nil {
 		// Bump degraded counter on every failure; the threshold

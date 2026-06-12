@@ -150,6 +150,24 @@ type HeartbeatRequest struct {
 	// "skip the per-node tracking" (bare-metal single-instance flow
 	// keeps working).
 	NodeName string `json:"node_name,omitempty"`
+	// Role identifies what kind of agent is sending the heartbeat.
+	// Matches the LIGHTHOUSE_ROLE config:
+	//
+	//   - "central"      — runs discovery, check scheduling, k8sstats.
+	//                      One per Lighthouse install (the StatefulSet
+	//                      flavour of the Helm chart or the only agent
+	//                      on a bare-metal install).
+	//   - "host_metrics" — per-node host-metric reporter (the DaemonSet
+	//                      flavour). One per Kubernetes node.
+	//
+	// Stored alongside NodeName on lighthouse_active_agents so the
+	// Console's "Active agents" panel can distinguish the central pod
+	// from the per-node reporters in its label column — the central
+	// pod has a NodeName that's actually its pod hostname, which
+	// looked like an extra "node" until we shipped this. Empty role
+	// from an older agent version is treated as "central" by the
+	// server for backwards compatibility.
+	Role string `json:"role,omitempty"`
 }
 
 // LatencyEntry is a sparse per-check latency snapshot included in the
