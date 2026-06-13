@@ -224,12 +224,19 @@ daemonset:
   extraEnv: []
   podLabels: {}
   podAnnotations: {}
-  # Default DaemonSet tolerations: schedule onto control-plane nodes
-  # too, since host metrics from control-plane nodes are useful.
-  # Override with [] to skip control-plane nodes entirely.
+  # Default DaemonSet tolerations: tolerate every NoSchedule taint so
+  # the agent lands on every node - control-plane, dedicated workload
+  # pools (e.g. workload=victoriametrics:NoSchedule), spot/preemptible
+  # pools, GPU nodes, anything. Mirrors what Prometheus node-exporter,
+  # Datadog agent, Cilium and kube-proxy do: a node-level metrics agent
+  # whose job is "every node, no exceptions" must ignore taints by
+  # design. Taints exist to keep regular workloads off; observability
+  # daemons should opt in to every node. If you really want lighthouse
+  # to skip a node, use daemonset.nodeSelector instead. NoExecute is
+  # *not* tolerated here on purpose: if a node is being evicted we
+  # want the DaemonSet pod to leave with everything else.
   tolerations:
-    - key: node-role.kubernetes.io/control-plane
-      operator: Exists
+    - operator: Exists
       effect: NoSchedule
   nodeSelector: {}
   affinity: {}
