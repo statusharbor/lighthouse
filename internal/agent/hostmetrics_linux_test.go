@@ -90,14 +90,14 @@ func TestLinuxCollector_CPUEmittedOnSecondCall(t *testing.T) {
 }
 
 func TestReadMounts_DropsPseudoFilesystems(t *testing.T) {
-	mounts, err := readMounts(DefaultProcRoot)
+	mounts, err := newMountTable(DefaultProcRoot, "").discover()
 	if err != nil {
-		t.Fatalf("readMounts: %v", err)
+		t.Fatalf("discover: %v", err)
 	}
 	for _, m := range mounts {
 		// proc / sys / cgroup mountpoints should never reach us
 		if m == "/proc" || m == "/sys" || m == "/sys/fs/cgroup" {
-			t.Errorf("readMounts returned pseudo-fs mountpoint %q", m)
+			t.Errorf("discover returned pseudo-fs mountpoint %q", m)
 		}
 	}
 }

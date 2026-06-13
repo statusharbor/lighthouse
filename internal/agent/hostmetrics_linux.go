@@ -199,7 +199,7 @@ func (c *linuxCollector) Collect() ([]transport.HostSample, error) {
 	// statfsTarget for the rules. The metric label "mount" stays the
 	// unprefixed host path so dashboards keep showing "/var/lib/docker"
 	// rather than "/host/root/var/lib/docker".
-	if mounts, err := readMounts(c.procRoot); err == nil {
+	if mounts, err := newMountTable(c.procRoot, c.hostRoot).discover(); err == nil {
 		for i, mp := range mounts {
 			if i >= maxMounts {
 				break
@@ -434,48 +434,6 @@ func cpuDeltas(prev, cur *cpuSnapshot) []cpuDelta {
 }
 
 // --- /proc/mounts + statfs -------------------------------------------------
-
-// readMounts returns the set of mountpoints we should report on. Filters:
-//   - skip pseudo filesystems (proc, sysfs, cgroup, …)
-//   - skip read-only mounts (e.g. snap squashfs)
-//   - dedup by mountpoint (some pseudo-fs appear twice)
-func readMounts(procRoot string) ([]string, error) {
-	f, err := os.Open(filepath.Join(procRoot, "mounts"))
-	if err != nil {
-		return nil, err
-	}
-	defer func() { _ = f.Close() }()
-
-	skip := map[string]struct{}{
-		"proc": {}, "sysfs": {}, "cgroup": {}, "cgroup2": {}, "devpts": {},
-		"devtmpfs": {}, "tmpfs": {}, "debugfs": {}, "tracefs": {}, "mqueue": {},
-		"securityfs": {}, "pstore": {}, "configfs": {}, "fusectl": {},
-		"hugetlbfs": {}, "autofs": {}, "binfmt_misc": {}, "rpc_pipefs": {},
-		"overlay": {}, "squashfs": {}, "ramfs": {}, "nsfs": {}, "fuse.snapfuse": {},
-	}
-	seen := make(map[string]struct{}, 16)
-	var out []string
-	sc := bufio.NewScanner(f)
-	for sc.Scan() {
-		fields := strings.Fields(sc.Text())
-		if len(fields) < 4 {
-			continue
-		}
-		mountpoint, fstype, opts := fields[1], fields[2], fields[3]
-		if _, ok := skip[fstype]; ok {
-			continue
-		}
-		if strings.HasPrefix(opts, "ro,") || opts == "ro" || strings.Contains(opts, ",ro,") || strings.HasSuffix(opts, ",ro") {
-			continue
-		}
-		if _, ok := seen[mountpoint]; ok {
-			continue
-		}
-		seen[mountpoint] = struct{}{}
-		out = append(out, mountpoint)
-	}
-	return out, sc.Err()
-}
 
 type fsStats struct {
 	usedBytes         uint64
