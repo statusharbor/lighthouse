@@ -242,11 +242,43 @@ daemonset:
   affinity: {}
   # Override resources, podSecurityContext, containerSecurityContext
   # individually; omitting any falls back to the central StatefulSet
-  # values above. The default container security context (readOnly
-  # rootfs, drop ALL caps) works fine for /proc reads.
+  # values above (which run as non-root uid 10001).
+  #
+  # DEFAULT: run the DaemonSet as root. The central StatefulSet stays
+  # non-root for the hardened posture; the per-node DaemonSet needs
+  # root because kubelet's pod-volume tree
+  # (/var/lib/kubelet/pods/<uid>/volumes/.../mount) is owned by root
+  # with 0700 / 0750 perms. A non-root agent can't even *traverse*
+  # those directories, so syscall.Statfs fails with EACCES on every
+  # PV mount - the disk panel silently omits attached PVs (200GB
+  # PD-SSDs, etc.) even though they appear in /host/proc/1/mounts.
+  # Every comparable node-level metrics agent ships the same way:
+  # Prometheus node-exporter, Datadog agent, Falco, netdata, Cilium.
+  # The "DaemonSet for node observability runs as root" expectation
+  # is the universally-understood baseline.
+  #
+  # To opt out (e.g. PSA `restricted` namespace that forbids
+  # runAsUser:0), override podSecurityContext explicitly here. You'll
+  # lose visibility into PV-mounted disks - the rest of the host
+  # metrics (CPU, mem, network, the COS stateful partition) still
+  # report fine.
   resources: {}
-  podSecurityContext: {}
-  containerSecurityContext: {}
+  podSecurityContext:
+    runAsNonRoot: false
+    runAsUser: 0
+    runAsGroup: 0
+    seccompProfile:
+      type: RuntimeDefault
+  # Container security context keeps the rest of the hardened defaults
+  # (read-only rootfs, no privilege escalation, drop all caps) - running
+  # as root gives us directory-traversal perms, which is the only thing
+  # we needed; we don't need to give back the other capabilities.
+  containerSecurityContext:
+    allowPrivilegeEscalation: false
+    readOnlyRootFilesystem: true
+    capabilities:
+      drop:
+        - ALL
 
 # PodDisruptionBudget. Off by default — voluntary disruptions
 # (node drains, cluster autoscaler) recreate the pod elsewhere with
