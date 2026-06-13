@@ -103,6 +103,27 @@ func main() {
 	}
 	slog.Info("runtime self-report", "runtime", runtime, "node_name", nodeName)
 
+	// metricHostname is the value stamped on the `host=` VictoriaMetrics
+	// label for host-metrics. DaemonSet pods would otherwise default to
+	// their pod hostname (os.Hostname() ⇒ e.g. "lighthouse-node-62vbx"),
+	// which diverges from lighthouse_active_agents.node_name (= the
+	// Kubernetes spec.nodeName, e.g. "gke-...-o779"). The Console's
+	// host-filter dropdown is fed by active_agents, so picking a node
+	// produced an empty chart — the label the operator selected didn't
+	// exist in VM. Aligning the metric label to NODE_NAME for
+	// host_metrics-only pods makes the dropdown and the chart legend
+	// share one vocabulary, with no schema or relabeling layer needed.
+	//
+	// Scoped to role=host_metrics deliberately: a central StatefulSet
+	// pod's /proc reflects the container, not the node it sits on, so
+	// labelling its metrics with the node name would be misleading.
+	// Bare-metal (NODE_NAME unset) and central (always uses
+	// os.Hostname()) paths stay unchanged.
+	metricHostname := hostname
+	if cfg.Agent.IsHostMetricsOnly() && os.Getenv("NODE_NAME") != "" {
+		metricHostname = os.Getenv("NODE_NAME")
+	}
+
 	// Register, then initial sync. Both must succeed before we start
 	// heartbeats and check scheduling.
 	registerCtx, registerCancel := context.WithTimeout(ctx, 30*time.Second)
@@ -237,7 +258,7 @@ func main() {
 			BaseURL:      agent.ConsoleURL,
 			Token:        cfg.Token,
 			LighthouseID: regResp.LighthouseID,
-			Hostname:     hostname,
+			Hostname:     metricHostname,
 			InstanceID:   instanceID,
 		})
 		// Host /proc collector — always runs (DaemonSet pods get
