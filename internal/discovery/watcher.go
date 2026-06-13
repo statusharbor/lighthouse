@@ -2,6 +2,7 @@ package discovery
 
 import (
 	"context"
+	"errors"
 	"log/slog"
 	"sync"
 	"time"
@@ -28,10 +29,11 @@ type Watcher struct {
 	// SendFunc is invoked with each fresh snapshot.
 	SendFunc func(ctx context.Context, items []SnapshotItem) error
 
-	mu        sync.Mutex
-	ingresses map[string]*Ingress // key = namespace/name
-	services  map[string]*Service // key = namespace/name
-	lastSent  []SnapshotItem
+	mu         sync.Mutex
+	ingresses  map[string]*Ingress  // key = namespace/name
+	services   map[string]*Service  // key = namespace/name
+	httproutes map[string]*HTTPRoute // key = namespace/name; nil-map ⇒ Gateway-API CRD not installed
+	lastSent   []SnapshotItem
 }
 
 // NewWatcher constructs a Watcher when running in-cluster. Returns
@@ -53,11 +55,17 @@ func NewWatcher(namespaces []string) (*Watcher, error) {
 		debounce:   2 * time.Second,
 		ingresses:  map[string]*Ingress{},
 		services:   map[string]*Service{},
+		// httproutes intentionally nil: probeHTTPRouteCRD flips it to
+		// an empty map on success. Nil = "no Gateway-API CRDs here,
+		// don't spin up the HTTPRoute watch loops" — see Run.
+		httproutes: nil,
 	}, nil
 }
 
 // Run blocks until ctx is cancelled. Spawns one watch goroutine per
-// (kind × namespace) plus a debounced sender goroutine.
+// (kind × namespace) plus a debounced sender goroutine. The HTTPRoute
+// watch is gated on a startup-time CRD probe so Ingress-only clusters
+// pay no kube-API cost for it.
 func (w *Watcher) Run(ctx context.Context) {
 	dirty := make(chan struct{}, 1)
 	notify := func() {
@@ -66,6 +74,8 @@ func (w *Watcher) Run(ctx context.Context) {
 		default:
 		}
 	}
+
+	httprouteEnabled := w.probeHTTPRouteCRD(ctx)
 
 	var wg sync.WaitGroup
 	for _, ns := range w.namespaces {
@@ -82,6 +92,13 @@ func (w *Watcher) Run(ctx context.Context) {
 			defer wg.Done()
 			w.serviceWatchLoop(ctx, ns, notify)
 		}(nsArg)
+		if httprouteEnabled {
+			wg.Add(1)
+			go func(ns string) {
+				defer wg.Done()
+				w.httprouteWatchLoop(ctx, ns, notify)
+			}(nsArg)
+		}
 	}
 
 	wg.Add(1)
@@ -91,6 +108,34 @@ func (w *Watcher) Run(ctx context.Context) {
 	}()
 
 	wg.Wait()
+}
+
+// probeHTTPRouteCRD checks whether gateway.networking.k8s.io/v1
+// HTTPRoute is installed on this cluster. A 404 (CRD missing) flips the
+// HTTPRoute watch off cleanly; any other error logs Warn and returns
+// false so a transient apiserver hiccup at startup doesn't permanently
+// disable the watch. On success, the httproutes cache is initialised to
+// an empty map so the snapshot builder treats "no items" distinctly
+// from "feature disabled".
+func (w *Watcher) probeHTTPRouteCRD(ctx context.Context) bool {
+	// A single zero-namespace list at startup. We don't seed the cache
+	// from it - the per-namespace listHTTPRoutes in the watch loop
+	// will do that under the same lock the rest of replaceX uses.
+	_, err := w.kube.listHTTPRoutes(ctx, "")
+	if err == nil {
+		w.mu.Lock()
+		w.httproutes = map[string]*HTTPRoute{}
+		w.mu.Unlock()
+		slog.Info("discovery: Gateway-API HTTPRoute watch enabled")
+		return true
+	}
+	if errors.Is(err, errHTTPRouteCRDMissing) {
+		slog.Info("discovery: Gateway-API CRDs not installed; HTTPRoute watch disabled")
+		return false
+	}
+	slog.Warn("discovery: HTTPRoute CRD probe failed; watch disabled this run",
+		"error", err)
+	return false
 }
 
 func (w *Watcher) ingressWatchLoop(ctx context.Context, ns string, notify func()) {
@@ -112,6 +157,41 @@ func (w *Watcher) ingressWatchLoop(ctx context.Context, ns string, notify func()
 				return
 			}
 			slog.Debug("kube ingress watch ended; relisting", "namespace", ns, "error", err)
+		}
+	}
+}
+
+// httprouteWatchLoop mirrors ingressWatchLoop / serviceWatchLoop. If
+// the CRD goes away mid-run (cluster admin uninstalls Gateway API), the
+// loop exits cleanly on the next watchHTTPRoutes call instead of
+// retry-storming the apiserver.
+func (w *Watcher) httprouteWatchLoop(ctx context.Context, ns string, notify func()) {
+	attempt := 0
+	for ctx.Err() == nil {
+		list, err := w.kube.listHTTPRoutes(ctx, ns)
+		if errors.Is(err, errHTTPRouteCRDMissing) {
+			slog.Info("kube httproute CRD removed; stopping watch loop", "namespace", ns)
+			return
+		}
+		if err != nil {
+			slog.Warn("kube list httproutes failed; will retry", "namespace", ns, "error", err)
+			attempt++
+			minBackoff(ctx, attempt)
+			continue
+		}
+		attempt = 0
+		w.replaceHTTPRoutes(ns, list.Items)
+		notify()
+
+		if err := w.kube.watchHTTPRoutes(ctx, ns, list.Metadata.ResourceVersion, notify); err != nil {
+			if ctx.Err() != nil {
+				return
+			}
+			if errors.Is(err, errHTTPRouteCRDMissing) {
+				slog.Info("kube httproute CRD removed; stopping watch loop", "namespace", ns)
+				return
+			}
+			slog.Debug("kube httproute watch ended; relisting", "namespace", ns, "error", err)
 		}
 	}
 }
@@ -156,6 +236,33 @@ func (w *Watcher) replaceIngresses(ns string, items []ingressJSON) {
 	for _, it := range items {
 		ing := fromKubeIngress(it)
 		w.ingresses[ing.Namespace+"/"+ing.Name] = ing
+	}
+}
+
+// replaceHTTPRoutes swaps the cached HTTPRoute state for one namespace.
+// Always operates on a non-nil map because probeHTTPRouteCRD seeded it
+// before any watch loop started.
+func (w *Watcher) replaceHTTPRoutes(ns string, items []httprouteJSON) {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	if w.httproutes == nil {
+		// Defensive: a CRD that flickered in-and-out across runs
+		// could in principle land us here. Treat as a no-op rather
+		// than nil-deref.
+		w.httproutes = map[string]*HTTPRoute{}
+	}
+	if ns == "" {
+		w.httproutes = make(map[string]*HTTPRoute, len(items))
+	} else {
+		for k, v := range w.httproutes {
+			if v.Namespace == ns {
+				delete(w.httproutes, k)
+			}
+		}
+	}
+	for _, it := range items {
+		rt := fromKubeHTTPRoute(it)
+		w.httproutes[rt.Namespace+"/"+rt.Name] = rt
 	}
 }
 
@@ -208,7 +315,7 @@ func (w *Watcher) senderLoop(ctx context.Context, dirty <-chan struct{}) {
 		}
 
 		w.mu.Lock()
-		snap := BuildSnapshot(w.ingresses, w.services)
+		snap := BuildSnapshot(w.ingresses, w.services, w.httproutes)
 		same := SnapshotsEqual(snap, w.lastSent)
 		if !same {
 			w.lastSent = snap

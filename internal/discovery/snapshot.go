@@ -13,22 +13,33 @@ var systemNamespaces = map[string]bool{
 	"kube-node-lease": true,
 }
 
-// BuildSnapshot fans Ingresses + Services out into a sorted,
-// deterministic snapshot. Sorting matters because the wire payload's
-// diff stability is what makes change detection cheap on the agent
-// side.
+// BuildSnapshot fans Ingresses + Services + HTTPRoutes out into a
+// sorted, deterministic snapshot. Sorting matters because the wire
+// payload's diff stability is what makes change detection cheap on the
+// agent side.
 //
 // Per design:
-//   - one item per (host, path) for ingresses
+//   - one item per (host, path) for ingresses + httproutes
 //   - one item per (svc, port) for services
-//   - scheme inferred from the TLS block (host listed in tls.hosts ⇒ https)
-//   - paths with type "ImplementationSpecific" are skipped
-//   - paths with empty Host or empty Path are skipped
-//   - services in system namespaces are skipped
+//   - scheme inferred from the TLS block for ingresses
+//   - HTTPRoute protocol defaults to "https" (Gateway-API leaves TLS
+//     termination to the parent Gateway; the v1 implementation here
+//     does not follow parentRefs, and Gateway-API installs are
+//     overwhelmingly TLS-fronted - a wrong guess just costs one
+//     redirected probe at adoption time)
+//   - Ingress paths with type "ImplementationSpecific" are skipped
+//   - HTTPRoute matches with type "RegularExpression" are skipped
+//   - wildcard hostnames on HTTPRoutes are skipped (can't probe a
+//     wildcard URL)
+//   - items in system namespaces are skipped
 //   - non-externally-facing services (ClusterIP, headless,
 //     ExternalName) are skipped
-func BuildSnapshot(ingresses map[string]*Ingress, services map[string]*Service) []SnapshotItem {
-	out := make([]SnapshotItem, 0, len(ingresses)+len(services))
+func BuildSnapshot(
+	ingresses map[string]*Ingress,
+	services map[string]*Service,
+	httproutes map[string]*HTTPRoute,
+) []SnapshotItem {
+	out := make([]SnapshotItem, 0, len(ingresses)+len(services)+len(httproutes))
 
 	for _, ing := range ingresses {
 		if systemNamespaces[ing.Namespace] {
@@ -76,6 +87,35 @@ func BuildSnapshot(ingresses map[string]*Ingress, services map[string]*Service) 
 				Port:         p.Port,
 				Protocol:     protocol,
 			})
+		}
+	}
+
+	for _, rt := range httproutes {
+		if systemNamespaces[rt.Namespace] {
+			continue
+		}
+		for _, host := range rt.Hostnames {
+			if host == "" || isWildcardHostname(host) {
+				continue
+			}
+			for _, rule := range rt.Rules {
+				for _, m := range rule.Matches {
+					if m.Type == "RegularExpression" {
+						continue
+					}
+					if m.Value == "" {
+						continue
+					}
+					out = append(out, SnapshotItem{
+						Kind:         "httproute",
+						Namespace:    rt.Namespace,
+						ResourceName: rt.Name,
+						Host:         host,
+						Path:         m.Value,
+						Protocol:     "https",
+					})
+				}
+			}
 		}
 	}
 

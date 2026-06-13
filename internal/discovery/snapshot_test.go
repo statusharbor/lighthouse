@@ -18,7 +18,7 @@ func TestBuildSnapshot_SchemeInference(t *testing.T) {
 			},
 		},
 	}
-	out := BuildSnapshot(in, nil)
+	out := BuildSnapshot(in, nil, nil)
 	if len(out) != 2 {
 		t.Fatalf("got %d items, want 2", len(out))
 	}
@@ -45,7 +45,7 @@ func TestBuildSnapshot_SkipsImplementationSpecific(t *testing.T) {
 			}},
 		},
 	}
-	out := BuildSnapshot(in, nil)
+	out := BuildSnapshot(in, nil, nil)
 	if len(out) != 1 || out[0].Path != "/" {
 		t.Errorf("want only /, got %+v", out)
 	}
@@ -66,7 +66,7 @@ func TestBuildSnapshot_FansOutHostsAndPaths(t *testing.T) {
 			},
 		},
 	}
-	out := BuildSnapshot(in, nil)
+	out := BuildSnapshot(in, nil, nil)
 	if len(out) != 3 {
 		t.Fatalf("want 3 items, got %d", len(out))
 	}
@@ -83,7 +83,7 @@ func TestBuildSnapshot_ServiceLoadBalancerSurfaces(t *testing.T) {
 			Ports: []ServicePort{{Name: "http", Port: 80, Protocol: "TCP"}},
 		},
 	}
-	out := BuildSnapshot(nil, in)
+	out := BuildSnapshot(nil, in, nil)
 	if len(out) != 1 {
 		t.Fatalf("got %d, want 1", len(out))
 	}
@@ -100,7 +100,7 @@ func TestBuildSnapshot_ServiceClusterIPSkipped(t *testing.T) {
 			Ports: []ServicePort{{Port: 8080, Protocol: "TCP"}},
 		},
 	}
-	if out := BuildSnapshot(nil, in); len(out) != 0 {
+	if out := BuildSnapshot(nil, in, nil); len(out) != 0 {
 		t.Errorf("ClusterIP should be skipped, got %+v", out)
 	}
 }
@@ -116,7 +116,7 @@ func TestBuildSnapshot_ServiceHeadlessSkipped(t *testing.T) {
 			Ports: []ServicePort{{Port: 80, Protocol: "TCP"}},
 		},
 	}
-	if out := BuildSnapshot(nil, in); len(out) != 0 {
+	if out := BuildSnapshot(nil, in, nil); len(out) != 0 {
 		t.Errorf("headless services should be skipped, got %+v", out)
 	}
 }
@@ -128,7 +128,7 @@ func TestBuildSnapshot_ServiceSystemNamespaceSkipped(t *testing.T) {
 			Ports: []ServicePort{{Port: 53, Protocol: "UDP"}},
 		},
 	}
-	if out := BuildSnapshot(nil, in); len(out) != 0 {
+	if out := BuildSnapshot(nil, in, nil); len(out) != 0 {
 		t.Errorf("kube-system should be skipped, got %+v", out)
 	}
 }
@@ -140,7 +140,7 @@ func TestBuildSnapshot_ServiceNodePortSurfaces(t *testing.T) {
 			Ports: []ServicePort{{Name: "https", Port: 443, Protocol: "TCP"}},
 		},
 	}
-	out := BuildSnapshot(nil, in)
+	out := BuildSnapshot(nil, in, nil)
 	if len(out) != 1 || out[0].Protocol != "https" {
 		t.Errorf("expected NodePort https surface, got %+v", out)
 	}
@@ -157,7 +157,7 @@ func TestBuildSnapshot_ServiceMultiPortFanOut(t *testing.T) {
 			},
 		},
 	}
-	out := BuildSnapshot(nil, in)
+	out := BuildSnapshot(nil, in, nil)
 	if len(out) != 3 {
 		t.Fatalf("want 3 rows (one per port), got %d", len(out))
 	}
@@ -207,8 +207,8 @@ func TestBuildSnapshot_DeterministicAcrossKinds(t *testing.T) {
 			Ports: []ServicePort{{Name: "http", Port: 80, Protocol: "TCP"}},
 		},
 	}
-	a := BuildSnapshot(ing, svc)
-	b := BuildSnapshot(ing, svc)
+	a := BuildSnapshot(ing, svc, nil)
+	b := BuildSnapshot(ing, svc, nil)
 	if !SnapshotsEqual(a, b) {
 		t.Errorf("BuildSnapshot is not deterministic across kinds")
 	}
