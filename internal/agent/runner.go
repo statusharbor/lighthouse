@@ -45,6 +45,15 @@ type Runner struct {
 	// var; on bare-metal it's the OS hostname.
 	nodeName string
 
+	// podHostname is the agent's own os.Hostname() — the DaemonSet
+	// pod name on k8s, the StatefulSet pod name on the central role,
+	// or the OS hostname on bare-metal. Paired with nodeName on the
+	// heartbeat so the Console's Metrics page can render
+	// "<node> (<pod>)" when the two differ. Empty in tests is fine:
+	// Console treats empty as "no pod-vs-node distinction" and
+	// falls back to displaying nodeName only.
+	podHostname string
+
 	// State tracked across the run — committed state per check_id used for
 	// transition detection. mu guards state + etag; the rollups self-lock
 	// (see rollup.go) so they run lock-free of state-transition commits.
@@ -81,18 +90,21 @@ type Runner struct {
 
 // NewRunner wires a Runner. The executor abstraction is what tests stub.
 // nodeName goes out on every heartbeat (see Runner.nodeName comment);
-// pass "" in tests that don't care about per-pod liveness — Console
-// treats empty as "skip the lighthouse_active_agents upsert".
-func NewRunner(cfg *Config, client *transport.Client, executor CheckExecutor, nodeName string) *Runner {
+// podHostname is os.Hostname() and lets the Console pair node-name
+// with pod-name in the Metrics UI (see Runner.podHostname comment).
+// Pass "" in tests that don't care about per-pod liveness or display —
+// Console handles empty values as backwards-compatible no-ops.
+func NewRunner(cfg *Config, client *transport.Client, executor CheckExecutor, nodeName, podHostname string) *Runner {
 	return &Runner{
-		cfg:        cfg,
-		client:     client,
-		executor:   executor,
-		nodeName:   nodeName,
-		state:      map[string]State{},
-		latency:    newRollup[transport.LatencyEntry](),
-		certExpiry: newRollup[transport.CertExpiryEntry](),
-		flap:       newFlapTracker(1), // threshold updated by Register/Heartbeat config
+		cfg:         cfg,
+		client:      client,
+		executor:    executor,
+		nodeName:    nodeName,
+		podHostname: podHostname,
+		state:       map[string]State{},
+		latency:     newRollup[transport.LatencyEntry](),
+		certExpiry:  newRollup[transport.CertExpiryEntry](),
+		flap:        newFlapTracker(1), // threshold updated by Register/Heartbeat config
 	}
 }
 
@@ -414,6 +426,7 @@ func (r *Runner) SendHeartbeat(ctx context.Context) (*transport.HeartbeatRespons
 		CertExpiry:     r.certExpiry.drain(),
 		NodeName:       r.nodeName,
 		Role:           role,
+		PodHostname:    r.podHostname,
 	})
 	if err != nil {
 		// Bump degraded counter on every failure; the threshold

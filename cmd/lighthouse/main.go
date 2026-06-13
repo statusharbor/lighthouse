@@ -156,7 +156,7 @@ func main() {
 	// agent.log_level=debug surfaces redacted check inputs/outputs for
 	// troubleshooting (per design §11).
 	executor := agent.NewLoggingExecutor(newRealExecutor(), nil)
-	r := agent.NewRunner(cfg, client, executor, nodeName)
+	r := agent.NewRunner(cfg, client, executor, nodeName, hostname)
 	if buf != nil {
 		r.SetBuffer(buf)
 	}
@@ -261,13 +261,29 @@ func main() {
 			Hostname:     metricHostname,
 			InstanceID:   instanceID,
 		})
-		// Host /proc collector — always runs (DaemonSet pods get
-		// /host/proc via cfg.Agent.ProcRoot, plus optionally the host's
-		// / bind-mounted at cfg.Agent.HostRoot so per-mount disk stats
-		// reflect the node instead of paths that happen to also exist
-		// inside the container). On non-Linux this is the platform
-		// collector (sysctl / WMI / noop).
-		hostC := agent.NewLinuxCollectorWithRoots(cfg.Agent.ProcRoot, cfg.Agent.HostRoot)
+		// Host /proc collector — bare-metal always, DaemonSet pods
+		// always (they mount /host/proc via cfg.Agent.ProcRoot, plus
+		// optionally the host's / at cfg.Agent.HostRoot so per-mount
+		// disk stats reflect the node instead of paths that happen
+		// to also exist inside the container). On non-Linux this is
+		// the platform collector (sysctl / WMI / noop).
+		//
+		// Suppressed for the central StatefulSet pod on Kubernetes:
+		// its /proc reflects the container's pid namespace, not the
+		// underlying GKE node, so the host=* series it would emit
+		// (cpu_busy_percent, mem_used_bytes, …) are not a meaningful
+		// view of anything an operator wants — neither the node
+		// (DaemonSet pods cover that) nor anything actionable. The
+		// noise also produced an empty-chart UX when an operator
+		// picked "lighthouse-0" from the Metrics page's host
+		// dropdown after the host=NODE_NAME alignment landed. The
+		// central pod keeps doing discovery + checks + k8sstats +
+		// heartbeats — only the per-host hardware readout is
+		// dropped.
+		var hostC agent.Collector
+		if hostMetricsOnly || !discovery.IsKubernetes() {
+			hostC = agent.NewLinuxCollectorWithRoots(cfg.Agent.ProcRoot, cfg.Agent.HostRoot)
+		}
 		// Cluster-shape collector — k8s only, central role only.
 		// DaemonSet pods don't run it because N pods all listing the
 		// apiserver would multiply the load. Outside a cluster

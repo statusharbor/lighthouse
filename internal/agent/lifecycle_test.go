@@ -23,7 +23,7 @@ func TestRunHeartbeat_TicksUntilContextCancelled(t *testing.T) {
 	defer srv.Close()
 
 	client := transport.NewClient(srv.URL, "lh_test", "")
-	r := NewRunner(&Config{Token: "lh_test", Agent: AgentConfig{MaxConcurrentChecks: 1}}, client, &fakeExecutor{}, "")
+	r := NewRunner(&Config{Token: "lh_test", Agent: AgentConfig{MaxConcurrentChecks: 1}}, client, &fakeExecutor{}, "", "")
 
 	ctx, cancel := context.WithTimeout(context.Background(), 250*time.Millisecond)
 	defer cancel()
@@ -41,7 +41,7 @@ func TestRunHeartbeat_ReturnsOnLighthouseGone(t *testing.T) {
 	defer srv.Close()
 
 	client := transport.NewClient(srv.URL, "lh_test", "")
-	r := NewRunner(&Config{Token: "lh_test"}, client, &fakeExecutor{}, "")
+	r := NewRunner(&Config{Token: "lh_test"}, client, &fakeExecutor{}, "", "")
 
 	ctx, cancel := context.WithTimeout(context.Background(), 500*time.Millisecond)
 	defer cancel()
@@ -66,7 +66,7 @@ func TestRunHeartbeat_TransientErrorsAreSwallowed(t *testing.T) {
 	defer srv.Close()
 
 	client := transport.NewClient(srv.URL, "lh_test", "")
-	r := NewRunner(&Config{Token: "lh_test"}, client, &fakeExecutor{}, "")
+	r := NewRunner(&Config{Token: "lh_test"}, client, &fakeExecutor{}, "", "")
 
 	ctx, cancel := context.WithTimeout(context.Background(), 200*time.Millisecond)
 	defer cancel()
@@ -101,7 +101,7 @@ func TestRunScheduler_ExecutesEachCheckPeriodically(t *testing.T) {
 
 	exec := &countingExecutor{}
 	client := transport.NewClient(srv.URL, "lh_test", "")
-	r := NewRunner(&Config{Token: "lh_test", Agent: AgentConfig{MaxConcurrentChecks: 5}}, client, exec, "")
+	r := NewRunner(&Config{Token: "lh_test", Agent: AgentConfig{MaxConcurrentChecks: 5}}, client, exec, "", "")
 	r.ApplyConfig([]CheckDefinition{
 		{ID: "c1", IntervalSeconds: 1}, // 1s minimum from JSON cast (we'll override jitter via short interval)
 	}, 1, false)
@@ -183,7 +183,7 @@ func TestRunScheduler_RestartsGoroutineOnDefinitionChange(t *testing.T) {
 
 	rec := &recordingExecutor{}
 	client := transport.NewClient(srv.URL, "lh_test", "")
-	r := NewRunner(&Config{Token: "lh_test", Agent: AgentConfig{MaxConcurrentChecks: 5}}, client, rec, "")
+	r := NewRunner(&Config{Token: "lh_test", Agent: AgentConfig{MaxConcurrentChecks: 5}}, client, rec, "", "")
 	r.ApplyConfig([]CheckDefinition{
 		{ID: "c1", Type: "http", IntervalSeconds: 1, KeywordCheck: "first"},
 	}, 1, false)

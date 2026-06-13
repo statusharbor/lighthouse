@@ -62,7 +62,7 @@ func TestRunInitialSync_OneEventPerCheck_PrevStateNil(t *testing.T) {
 			"c2": {State: StateDown, ResponseTimeMs: 5021, ErrorMessage: "i/o timeout"},
 		},
 	}
-	r := NewRunner(&Config{Token: "lh_test"}, client, exec, "")
+	r := NewRunner(&Config{Token: "lh_test"}, client, exec, "", "")
 
 	defs := []CheckDefinition{
 		{ID: "c1", Type: "http", Name: "api"},
@@ -114,7 +114,7 @@ func TestRunInitialSync_RunsEveryCheckExactlyOnce(t *testing.T) {
 		"c2": {State: StateUp},
 		"c3": {State: StateDown},
 	}}
-	r := NewRunner(&Config{Token: "lh_test"}, client, exec, "")
+	r := NewRunner(&Config{Token: "lh_test"}, client, exec, "", "")
 
 	defs := []CheckDefinition{{ID: "c1"}, {ID: "c2"}, {ID: "c3"}}
 	if err := r.RunInitialSync(context.Background(), defs); err != nil {
@@ -134,7 +134,7 @@ func TestRunInitialSync_RunsEveryCheckExactlyOnce(t *testing.T) {
 func TestRunInitialSync_NoChecks_NoNetworkCall(t *testing.T) {
 	mock := newRecordingMock(t)
 	client := transport.NewClient(mock.URL, "lh_test", "")
-	r := NewRunner(&Config{Token: "lh_test"}, client, &fakeExecutor{}, "")
+	r := NewRunner(&Config{Token: "lh_test"}, client, &fakeExecutor{}, "", "")
 
 	if err := r.RunInitialSync(context.Background(), nil); err != nil {
 		t.Fatal(err)
@@ -213,7 +213,7 @@ func TestSendHeartbeat_IncludesEtagAndDrainsLatencies(t *testing.T) {
 	mock := newFullMock(t)
 	mock.heartbeatResp = []transport.HeartbeatResponse{{ConfigEtag: "new-etag"}}
 	client := transport.NewClient(mock.URL, "lh_test", "")
-	r := NewRunner(&Config{Token: "lh_test"}, client, &fakeExecutor{}, "")
+	r := NewRunner(&Config{Token: "lh_test"}, client, &fakeExecutor{}, "", "")
 	r.SetEtag("old-etag")
 	r.latency.record("c1", transport.LatencyEntry{LastObservedLatencyMs: 42})
 
@@ -258,7 +258,7 @@ func TestObserveAndEmit_SilentOnSteadyState(t *testing.T) {
 	exec := &fakeExecutor{out: map[string]CheckObservation{
 		"c1": {State: StateUp, ResponseTimeMs: 10},
 	}}
-	r := NewRunner(&Config{Token: "lh_test"}, client, exec, "")
+	r := NewRunner(&Config{Token: "lh_test"}, client, exec, "", "")
 
 	// Seed initial state via initial-sync (one batch posted).
 	if err := r.RunInitialSync(context.Background(), []CheckDefinition{{ID: "c1"}}); err != nil {
@@ -286,7 +286,7 @@ func TestObserveAndEmit_EmitsTransitionWithPrevState(t *testing.T) {
 	exec := &fakeExecutor{out: map[string]CheckObservation{
 		"c1": {State: StateUp},
 	}}
-	r := NewRunner(&Config{Token: "lh_test"}, client, exec, "")
+	r := NewRunner(&Config{Token: "lh_test"}, client, exec, "", "")
 
 	if err := r.RunInitialSync(context.Background(), []CheckDefinition{{ID: "c1"}}); err != nil {
 		t.Fatal(err)
@@ -326,7 +326,7 @@ func TestObserveAndEmit_RecordsLatencyEvenWithoutTransition(t *testing.T) {
 	exec := &fakeExecutor{out: map[string]CheckObservation{
 		"c1": {State: StateUp, ResponseTimeMs: 99},
 	}}
-	r := NewRunner(&Config{Token: "lh_test"}, client, exec, "")
+	r := NewRunner(&Config{Token: "lh_test"}, client, exec, "", "")
 
 	_ = r.RunInitialSync(context.Background(), []CheckDefinition{{ID: "c1"}})
 	// Steady-state run — no transition, but latency must be recorded for
@@ -350,7 +350,7 @@ func TestSendHeartbeat_ChecksPresent_AdoptsFreshConfig(t *testing.T) {
 		},
 	}}
 	client := transport.NewClient(mock.URL, "lh_test", "")
-	r := NewRunner(&Config{Token: "lh_test"}, client, &fakeExecutor{}, "")
+	r := NewRunner(&Config{Token: "lh_test"}, client, &fakeExecutor{}, "", "")
 
 	if _, err := r.SendHeartbeat(context.Background()); err != nil {
 		t.Fatal(err)
@@ -380,7 +380,7 @@ func TestSendHeartbeat_NoChecks_StillUpdatesPausedAndThreshold(t *testing.T) {
 		// Checks omitted — server says "your view of config is current".
 	}}
 	client := transport.NewClient(mock.URL, "lh_test", "")
-	r := NewRunner(&Config{Token: "lh_test"}, client, &fakeExecutor{}, "")
+	r := NewRunner(&Config{Token: "lh_test"}, client, &fakeExecutor{}, "", "")
 	r.ApplyConfig([]CheckDefinition{{ID: "kept"}}, 1, false)
 
 	if _, err := r.SendHeartbeat(context.Background()); err != nil {
@@ -407,7 +407,7 @@ func TestSendHeartbeat_NoChecks_StillUpdatesPausedAndThreshold(t *testing.T) {
 // ApplyConfig must report which check IDs are new vs already-present so the
 // heartbeat path can initial-sync only the new ones.
 func TestApplyConfig_ReturnsNewlyAddedChecks(t *testing.T) {
-	r := NewRunner(&Config{Token: "x"}, nil, &fakeExecutor{}, "")
+	r := NewRunner(&Config{Token: "x"}, nil, &fakeExecutor{}, "", "")
 
 	added := r.ApplyConfig([]CheckDefinition{{ID: "a"}, {ID: "b"}}, 1, false)
 	if len(added) != 2 {
@@ -442,7 +442,7 @@ func TestSendHeartbeat_NewChecks_TriggerInitialSync(t *testing.T) {
 	exec := &fakeExecutor{out: map[string]CheckObservation{
 		"c-new": {State: StateUp, ResponseTimeMs: 12, StatusCode: 200},
 	}}
-	r := NewRunner(&Config{Token: "lh_test"}, client, exec, "")
+	r := NewRunner(&Config{Token: "lh_test"}, client, exec, "", "")
 
 	if _, err := r.SendHeartbeat(context.Background()); err != nil {
 		t.Fatal(err)
@@ -481,7 +481,7 @@ func TestSendHeartbeat_RequestFullResync_RunsForAllChecks(t *testing.T) {
 		"a": {State: StateUp, ResponseTimeMs: 5},
 		"b": {State: StateDown, ErrorMessage: "timeout"},
 	}}
-	r := NewRunner(&Config{Token: "lh_test"}, client, exec, "")
+	r := NewRunner(&Config{Token: "lh_test"}, client, exec, "", "")
 	r.ApplyConfig([]CheckDefinition{{ID: "a"}, {ID: "b"}}, 1, false)
 
 	if _, err := r.SendHeartbeat(context.Background()); err != nil {
@@ -522,7 +522,7 @@ func TestObserveAndEmit_FlapProtectionDelaysCommit(t *testing.T) {
 	exec := &fakeExecutor{out: map[string]CheckObservation{
 		"c1": {State: StateUp},
 	}}
-	r := NewRunner(&Config{Token: "lh_test"}, client, exec, "")
+	r := NewRunner(&Config{Token: "lh_test"}, client, exec, "", "")
 	r.ApplyConfig(nil, 3, false) // threshold = 3
 
 	// Initial sync → committed: up
@@ -576,7 +576,7 @@ func newShutdownMock(t *testing.T) *recordingShutdownMock {
 func TestShutdown_FlushesBufferedEventsThenPostsShutdown(t *testing.T) {
 	mock := newShutdownMock(t)
 	client := transport.NewClient(mock.URL, "lh_test", "")
-	r := NewRunner(&Config{Token: "lh_test"}, client, &fakeExecutor{}, "")
+	r := NewRunner(&Config{Token: "lh_test"}, client, &fakeExecutor{}, "", "")
 
 	buf, err := NewEventBuffer(t.TempDir())
 	if err != nil {
@@ -617,7 +617,7 @@ func TestShutdown_FlushesBufferedEventsThenPostsShutdown(t *testing.T) {
 func TestShutdown_NoBufferStillPostsShutdown(t *testing.T) {
 	mock := newShutdownMock(t)
 	client := transport.NewClient(mock.URL, "lh_test", "")
-	r := NewRunner(&Config{Token: "lh_test"}, client, &fakeExecutor{}, "")
+	r := NewRunner(&Config{Token: "lh_test"}, client, &fakeExecutor{}, "", "")
 
 	if err := r.Shutdown(context.Background(), "sigterm"); err != nil {
 		t.Fatal(err)
@@ -634,7 +634,7 @@ func TestShutdown_BestEffort_NetworkErrorDoesNotPropagate(t *testing.T) {
 	// Point at a non-listening port — Shutdown must still return nil so
 	// main can proceed to exit cleanly.
 	client := transport.NewClient("http://127.0.0.1:1", "lh_test", "")
-	r := NewRunner(&Config{Token: "lh_test"}, client, &fakeExecutor{}, "")
+	r := NewRunner(&Config{Token: "lh_test"}, client, &fakeExecutor{}, "", "")
 
 	if err := r.Shutdown(context.Background(), "sigterm"); err != nil {
 		t.Errorf("Shutdown must be best-effort, got error: %v", err)

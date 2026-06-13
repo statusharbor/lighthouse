@@ -168,6 +168,18 @@ type HeartbeatRequest struct {
 	// from an older agent version is treated as "central" by the
 	// server for backwards compatibility.
 	Role string `json:"role,omitempty"`
+	// PodHostname is os.Hostname() — the DaemonSet pod name on
+	// Kubernetes (e.g. "lighthouse-node-jr644"), the StatefulSet pod
+	// name on the central role, or the OS hostname on bare-metal.
+	// NodeName is the GKE spec.nodeName from the downward API and
+	// carries the canonical node identity (also the VictoriaMetrics
+	// `host=` label since we aligned the two). PodHostname is the
+	// per-pod identity the Console's Metrics page pairs it with so
+	// operators can tell which specific pod is currently reporting
+	// on a node. Empty here on bare-metal == NodeName, so the
+	// server treats empty as "no pod-vs-node distinction" and the
+	// UI renders just the node name in that case.
+	PodHostname string `json:"pod_hostname,omitempty"`
 }
 
 // LatencyEntry is a sparse per-check latency snapshot included in the
