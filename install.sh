@@ -56,15 +56,23 @@ else
 fi
 
 # --- discover latest release ----------------------------------------------
+# Use github.com's /releases/latest redirect rather than api.github.com.
+# The API path is rate-limited to 60 req/hr per IP for unauthenticated
+# callers, which trips on any sufficiently busy office or NAT'd network
+# (we hit it ourselves). The redirect lives on github.com and doesn't
+# share that budget.
 note "discovering latest release"
-api_url="https://api.github.com/repos/${REPO}/releases/latest"
-tmp_release=$(mktemp)
-trap 'rm -f "$tmp_release"' EXIT
-fetch "$api_url" "$tmp_release"
-
-# Plain shell parsing — avoids requiring jq on minimal hosts.
-tag=$(grep -m1 '"tag_name"' "$tmp_release" | sed 's/.*"tag_name": *"\([^"]*\)".*/\1/')
-[ -n "$tag" ] || die "could not parse tag_name from GitHub release JSON"
+latest_url="https://github.com/${REPO}/releases/latest"
+if command -v curl >/dev/null 2>&1; then
+    tag=$(curl -fsSI -o /dev/null -w '%{redirect_url}' "$latest_url" \
+        | sed -n 's|.*/tag/\(.*\)$|\1|p' | tr -d '\r\n')
+else
+    # wget: -S writes response headers to stderr; --max-redirect=0 keeps
+    # wget from following so the Location header is what we read.
+    tag=$(wget -qS --max-redirect=0 -O /dev/null "$latest_url" 2>&1 \
+        | sed -n 's|.*[Ll]ocation: .*/tag/\(.*\)$|\1|p' | tr -d '\r\n')
+fi
+[ -n "$tag" ] || die "could not discover latest release tag from github.com redirect"
 note "version: $tag"
 
 binary_name="lighthouse_${os}_${arch}"
@@ -74,7 +82,7 @@ checksum_url="https://github.com/${REPO}/releases/download/${tag}/checksums.txt"
 # --- download + verify -----------------------------------------------------
 tmp_bin=$(mktemp)
 tmp_sums=$(mktemp)
-trap 'rm -f "$tmp_release" "$tmp_bin" "$tmp_sums"' EXIT
+trap 'rm -f "$tmp_bin" "$tmp_sums"' EXIT
 
 note "downloading $binary_name"
 fetch "$binary_url" "$tmp_bin"
