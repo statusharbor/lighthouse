@@ -38,7 +38,7 @@ func (r *Runner) RunHeartbeat(ctx context.Context, interval time.Duration) error
 		case <-ctx.Done():
 			return nil
 		case <-t.C:
-			_, err := r.SendHeartbeat(ctx)
+			resp, err := r.SendHeartbeat(ctx)
 			if err != nil {
 				if errors.Is(err, transport.ErrLighthouseGone) {
 					return err
@@ -49,6 +49,15 @@ func (r *Runner) RunHeartbeat(ctx context.Context, interval time.Duration) error
 			}
 			if r.health != nil {
 				r.health.RecordHeartbeat()
+			}
+			// Plumb the host-metrics gate refresh through the
+			// controller. ApplyGate is idempotent on a no-change
+			// response, so the steady-state cost is one map lookup
+			// + interval comparison. The tri-state contract on the
+			// wire (nil = "no signal from server", non-nil = "this
+			// is the new gate") is preserved end-to-end.
+			if resp != nil && resp.HostMetrics != nil {
+				r.HostMetricsController().ApplyGate(resp.HostMetrics)
 			}
 		}
 	}

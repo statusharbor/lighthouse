@@ -86,6 +86,16 @@ type Runner struct {
 	// its caller-provided budget so a SIGTERM mid-resync doesn't
 	// strand transitions that were about to reach the buffer.
 	resyncWG sync.WaitGroup
+
+	// hmCtrl owns the host-metrics collector goroutine lifecycle.
+	// RunHostMetrics attaches the collector + sender; RunHeartbeat
+	// drives ApplyGate from each successful heartbeat response so a
+	// plan-flip server-side (trial start/expire, paid upgrade,
+	// admin re-assign) takes effect within one heartbeat interval
+	// instead of waiting for a process restart. Constructed eagerly
+	// in NewRunner so heartbeat-driven ApplyGate calls can never race
+	// the host-metrics goroutine's startup.
+	hmCtrl *HostMetricsController
 }
 
 // NewRunner wires a Runner. The executor abstraction is what tests stub.
@@ -105,6 +115,11 @@ func NewRunner(cfg *Config, client *transport.Client, executor CheckExecutor, no
 		latency:     newRollup[transport.LatencyEntry](),
 		certExpiry:  newRollup[transport.CertExpiryEntry](),
 		flap:        newFlapTracker(1), // threshold updated by Register/Heartbeat config
+		// Construct the host-metrics controller eagerly so heartbeats can
+		// ApplyGate without racing the host-metrics goroutine's startup.
+		// rootCtx defaults to Background here; RunHostMetrics replaces it
+		// with the shutdown-aware ctx before spawning the inner ticker.
+		hmCtrl: newHostMetricsController(),
 	}
 }
 

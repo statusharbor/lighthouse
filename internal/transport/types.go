@@ -205,12 +205,22 @@ type CertExpiryEntry struct {
 // hold. Checks is non-nil only when the etag changed (server included a
 // fresh check list); the agent uses presence-of-checks as the cache-bust
 // signal.
+//
+// HostMetrics carries the same tri-state contract as the field on
+// RegisterResponse (see HostMetricsConfig above). The Console plumbs it on
+// every heartbeat so plan-flip transitions (trial start/expire, paid
+// upgrade/downgrade, admin re-assign) reach a long-running agent within
+// one heartbeat interval instead of waiting for a process restart. Older
+// Consoles omit the field; the agent treats absent here as "no change"
+// (NOT as plan-unsupported - that interpretation only applies to /register
+// where there's no prior collector state to preserve).
 type HeartbeatResponse struct {
-	ConfigEtag              string     `json:"config_etag"`
-	Paused                  bool       `json:"paused"`
-	FlapProtectionThreshold int        `json:"flap_protection_threshold"`
-	RequestFullResync       bool       `json:"request_full_resync"`
-	Checks                  []CheckDef `json:"checks,omitempty"`
+	ConfigEtag              string             `json:"config_etag"`
+	Paused                  bool               `json:"paused"`
+	FlapProtectionThreshold int                `json:"flap_protection_threshold"`
+	RequestFullResync       bool               `json:"request_full_resync"`
+	Checks                  []CheckDef         `json:"checks,omitempty"`
+	HostMetrics             *HostMetricsConfig `json:"host_metrics,omitempty"`
 }
 
 // ShutdownRequest is what the agent posts on SIGTERM (per design §4.4).
