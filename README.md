@@ -5,10 +5,6 @@ network** to monitor services that the public internet can't reach. It
 talks to your Status Harbor Console over outbound HTTPS only — no inbound
 ports, no VPN, no reverse tunnel.
 
-> **Status:** pre-release. The Console-side ingress is at
-> `https://lighthouse.statusharbor.io`. Early access is gated per team
-> from your account settings.
-
 ## Install
 
 ### Linux / macOS
