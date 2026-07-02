@@ -96,6 +96,82 @@ type Runner struct {
 	// in NewRunner so heartbeat-driven ApplyGate calls can never race
 	// the host-metrics goroutine's startup.
 	hmCtrl *HostMetricsController
+
+	// onDatabaseGate, when set, receives the full databases gate so a plan
+	// flip / config change applies live (same as hmCtrl). A func rather
+	// than a concrete controller so the agent package stays decoupled from
+	// the database collector package (no import cycle); main.go sets it to
+	// DatabaseController.ApplyGate. The bool is `fresh` - true only when the
+	// gate was just re-fetched from /config (a new lease epoch), false when
+	// it is the cached gate re-applied on an ordinary heartbeat. The
+	// controller uses it to reset the slow-query live-lease deadline only on
+	// a genuine re-fetch (#24), never on every heartbeat.
+	onDatabaseGate func(*transport.DatabaseGate, bool)
+
+	// Cold-path databases config cache. The heartbeat carries only the
+	// enabled flag + the shared config_etag; the cluster list + node DSNs
+	// are fetched from GET /config only when the etag moves. lastDBGate
+	// caches the last fetched gate so a disable→re-enable with an unchanged
+	// etag resumes without a re-fetch. Accessed only from the heartbeat
+	// goroutine (and one pre-loop call at startup), so no lock needed.
+	lastDBEtag string
+	lastDBGate *transport.DatabaseGate
+}
+
+// SetDatabaseGateHandler registers the databases-gate callback
+// ApplyDatabaseGate invokes. Set once at startup. The bool arg is `fresh`
+// (see onDatabaseGate).
+func (r *Runner) SetDatabaseGateHandler(fn func(*transport.DatabaseGate, bool)) {
+	r.onDatabaseGate = fn
+}
+
+// ApplyDatabaseGate reconciles the databases collector with the server on
+// each register/heartbeat. db carries only Enabled (the cheap plan flag);
+// etag is the DATABASES-section etag (#11) the caller resolved from
+// config_etags["databases"], falling back to the scalar config_etag on older
+// Consoles. Keying the refetch off the section etag means a monitor edit -
+// which bumps the checks section + the scalar but leaves databases unchanged
+// - no longer forces a DSN-gate refetch. Enabled toggles collection every
+// call so time-based plan flips (trial expiry, which bump no etag) apply even
+// when the etag is unchanged. The heavy cluster+DSN payload is fetched from
+// GET /config?sections=databases only when the section etag moved (cold
+// path), then cached.
+func (r *Runner) ApplyDatabaseGate(ctx context.Context, db *transport.DatabaseGate, etag string) {
+	if r.onDatabaseGate == nil {
+		return // databases collector not wired (host_metrics-only role)
+	}
+	if db == nil || !db.Enabled {
+		r.onDatabaseGate(&transport.DatabaseGate{Enabled: false}, false)
+		r.lastDBGate = nil
+		r.lastDBEtag = ""
+		return
+	}
+	// fresh is true only when this call re-fetched the gate from /config (a
+	// new lease epoch for #24); a cached re-apply below leaves it false so
+	// the slow-query lease deadline keeps counting down instead of resetting
+	// on every heartbeat.
+	fresh := false
+	if etag != r.lastDBEtag || r.lastDBGate == nil {
+		cfg, err := r.client.Config(ctx, transport.DatabasesConfigSection)
+		if err != nil {
+			// Keep the current collectors running on a transient fetch
+			// failure; the next heartbeat retries against the same etag. Not
+			// a new lease epoch, so fresh stays false.
+			slog.Warn("fetch lighthouse config failed; keeping current databases gate", "error", err)
+			if r.lastDBGate != nil {
+				r.onDatabaseGate(r.lastDBGate, false)
+			}
+			return
+		}
+		gate := cfg.Databases
+		if gate == nil {
+			gate = &transport.DatabaseGate{Enabled: false}
+		}
+		r.lastDBGate = gate
+		r.lastDBEtag = etag
+		fresh = true
+	}
+	r.onDatabaseGate(r.lastDBGate, fresh)
 }
 
 // NewRunner wires a Runner. The executor abstraction is what tests stub.
@@ -328,6 +404,25 @@ func (r *Runner) bufferEvents(events []transport.EventInput, reason string) erro
 	return nil
 }
 
+// bufferedEventCount reports the current on-disk buffer depth for the
+// heartbeat's channel-health field. Returns 0 when no buffer is attached or
+// the depth read fails - a best-effort telemetry number should never break
+// a heartbeat.
+func (r *Runner) bufferedEventCount() int {
+	r.mu.Lock()
+	buf := r.buffer
+	r.mu.Unlock()
+	if buf == nil {
+		return 0
+	}
+	n, err := buf.Depth()
+	if err != nil {
+		slog.Warn("event buffer depth read failed", "error", err)
+		return 0
+	}
+	return n
+}
+
 // drainBuffer flushes any buffered events through SendEvents.
 // Called from SendHeartbeat after a successful round-trip so the
 // agent reconnects to the Console and immediately catches up.
@@ -442,6 +537,13 @@ func (r *Runner) SendHeartbeat(ctx context.Context) (*transport.HeartbeatRespons
 		NodeName:       r.nodeName,
 		Role:           role,
 		PodHostname:    r.podHostname,
+		// Channel-health signals (design #12). RTT + skew describe the
+		// PREVIOUS beat (the client records them after each round-trip, so
+		// the values read here are from the beat before this one);
+		// buffered_events is the current disk-buffer depth.
+		RTTMs:          r.client.LastHeartbeatRTTMs(),
+		ClockSkewMs:    r.client.LastHeartbeatClockSkewMs(),
+		BufferedEvents: r.bufferedEventCount(),
 	})
 	if err != nil {
 		// Bump degraded counter on every failure; the threshold

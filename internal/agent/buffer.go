@@ -182,6 +182,38 @@ func (b *EventBuffer) IsEmpty() (bool, error) {
 	return st.Size() == 0, nil
 }
 
+// Depth returns the number of buffered event lines currently on disk. Used
+// by the heartbeat's channel-health report (buffered_events). Cheap in the
+// steady state - the file is absent when nothing is buffered, so it returns
+// 0 after a stat/open miss. During an outage it counts the JSONL lines; the
+// file is byte-capped (maxBytes) so the scan is bounded.
+func (b *EventBuffer) Depth() (int, error) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+
+	f, err := os.Open(b.path)
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return 0, nil
+		}
+		return 0, err
+	}
+	defer func() { _ = f.Close() }()
+
+	count := 0
+	scanner := bufio.NewScanner(f)
+	scanner.Buffer(make([]byte, 0, 64*1024), 1<<20)
+	for scanner.Scan() {
+		if len(scanner.Bytes()) > 0 {
+			count++
+		}
+	}
+	if err := scanner.Err(); err != nil {
+		return count, fmt.Errorf("scan buffer: %w", err)
+	}
+	return count, nil
+}
+
 // trimToBytes drops oldest lines until the file fits in maxBytes.
 // Returns the number of lines dropped so the caller can log + count
 // — operators looking at "why is my agent's reporting incomplete?"

@@ -101,6 +101,9 @@ type AgentConfig struct {
 	// (accepted by multi-instance but a needless amount of work). See
 	// docs/victoriametrics/lighthause/PLAN.md §2.1 (status-harbor).
 	Role string `yaml:"role"`
+	// Databases feature (docs/databases/plan.md): configuration is done
+	// in the Console and delivered to the agent via the gate on
+	// /register + /heartbeat - there is NO local database config here.
 }
 
 // Roles understood by Role above. RoleCentral is the implicit default —

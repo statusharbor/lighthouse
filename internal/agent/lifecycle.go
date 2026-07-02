@@ -26,27 +26,82 @@ var supervisorTickInterval = 30 * time.Second
 // can override.
 var minCheckIntervalFloor = 5 * time.Second
 
-// RunHeartbeat ticks SendHeartbeat at the given interval until ctx ends or
-// the Console returns 410 Gone. Returns ErrLighthouseGone in that case so
-// main can exit(0). Per design §4.2 there is no retry — a failed heartbeat
-// is dropped and the next tick is the retry.
+// heartbeatMaxBackoff caps the failure backoff. The Console's offline
+// watchdog tolerates a 60s gap before marking an agent offline, so backing
+// off past that would flap the agent's liveness for no gain. A server
+// Retry-After larger than this is still honoured verbatim - that's an
+// explicit "come back later" from the Console, not our own guess.
+const heartbeatMaxBackoff = 60 * time.Second
+
+// jitterInterval perturbs d by +-20% so a fleet of agents that all
+// reconnected at the same instant (e.g. after a Console redeploy) re-spread
+// their heartbeats across the interval instead of stampeding the Console on
+// the same tick. Non-positive d is returned unchanged.
+func jitterInterval(d time.Duration) time.Duration {
+	if d <= 0 {
+		return d
+	}
+	// Multiplier in [0.8, 1.2).
+	j := time.Duration(float64(d) * (0.8 + rand.Float64()*0.4))
+	if j <= 0 {
+		j = d
+	}
+	return j
+}
+
+// nextHeartbeatBackoff computes the delay before the next beat after a
+// failure. A server Retry-After on a 429 / 5xx wins (honoured verbatim);
+// otherwise the previous backoff doubles, seeded from the base interval,
+// capped at heartbeatMaxBackoff.
+func nextHeartbeatBackoff(prev, base time.Duration, err error) time.Duration {
+	var re *transport.RetryableStatusError
+	if errors.As(err, &re) && re.RetryAfter > 0 {
+		return re.RetryAfter
+	}
+	next := prev * 2
+	if next <= 0 {
+		next = base
+	}
+	if next > heartbeatMaxBackoff {
+		next = heartbeatMaxBackoff
+	}
+	return next
+}
+
+// RunHeartbeat beats SendHeartbeat until ctx ends or the Console returns 410
+// Gone. Returns ErrLighthouseGone in that case so main can exit(0). Per
+// design §4.2 there is no in-beat retry - a failed beat is dropped and the
+// next scheduled beat is the retry.
+//
+// Cadence: each healthy beat is scheduled at interval +-20% jitter. On a
+// 429 / 5xx the loop backs off (honouring a server Retry-After, else
+// exponential capped at 60s) and resets to the jittered base cadence on the
+// next success.
 func (r *Runner) RunHeartbeat(ctx context.Context, interval time.Duration) error {
-	t := time.NewTicker(interval)
-	defer t.Stop()
+	// backoff tracks the current failure penalty; 0 means "healthy, use the
+	// jittered base cadence".
+	var backoff time.Duration
+	timer := time.NewTimer(jitterInterval(interval))
+	defer timer.Stop()
 	for {
 		select {
 		case <-ctx.Done():
 			return nil
-		case <-t.C:
+		case <-timer.C:
 			resp, err := r.SendHeartbeat(ctx)
 			if err != nil {
 				if errors.Is(err, transport.ErrLighthouseGone) {
 					return err
 				}
-				slog.Warn("heartbeat failed; will retry on next tick",
-					"interval", interval, "error", err)
+				backoff = nextHeartbeatBackoff(backoff, interval, err)
+				slog.Warn("heartbeat failed; backing off before next beat",
+					"backoff", backoff, "error", err)
+				timer.Reset(backoff)
 				continue
 			}
+			// Success - clear any backoff and return to the jittered cadence.
+			backoff = 0
+			timer.Reset(jitterInterval(interval))
 			if r.health != nil {
 				r.health.RecordHeartbeat()
 			}
@@ -59,8 +114,30 @@ func (r *Runner) RunHeartbeat(ctx context.Context, interval time.Duration) error
 			if resp != nil && resp.HostMetrics != nil {
 				r.HostMetricsController().ApplyGate(resp.HostMetrics)
 			}
+			// Databases gate - enabled flips apply live; the cluster+DSN
+			// payload is fetched from /config only when the DATABASES-section
+			// etag moved (#11), so a monitor edit that bumps only the checks
+			// section doesn't re-pull the DSN gate.
+			if resp != nil {
+				r.ApplyDatabaseGate(ctx, resp.Databases, databasesEtag(resp))
+			}
 		}
 	}
+}
+
+// databasesEtag returns the etag that gates a database-gate refetch (#11).
+// It prefers the per-section value config_etags["databases"] so a change
+// confined to another section (e.g. a monitor edit bumping "checks") leaves
+// it stable and skips the DSN-gate refetch. When the Console sends no
+// config_etags map (older build), it falls back to the scalar config_etag,
+// preserving the previous refetch-on-any-change behaviour.
+func databasesEtag(resp *transport.HeartbeatResponse) string {
+	if len(resp.ConfigEtags) > 0 {
+		// Present but missing the databases key means the section is not
+		// configured; "" is stable, so no refetch is triggered.
+		return resp.ConfigEtags[transport.DatabasesConfigSection]
+	}
+	return resp.ConfigEtag
 }
 
 // scheduledCheck is the supervisor's bookkeeping per running check.

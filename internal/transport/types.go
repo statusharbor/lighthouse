@@ -4,7 +4,10 @@
 // abstract sink.
 package transport
 
-import "time"
+import (
+	"encoding/json"
+	"time"
+)
 
 // RegisterRequest is what the agent posts to /api/lighthouse/v1/register on
 // startup. Per design §4.1: the lighthouse_id is NOT sent — server resolves
@@ -21,6 +24,13 @@ type RegisterRequest struct {
 	AgentVersion  string `json:"agent_version"`
 	AgentHostname string `json:"agent_hostname"`
 	Runtime       string `json:"runtime,omitempty"`
+	// AgentPublicKey is base64(std) of the agent's 32-byte NaCl box
+	// (X25519) PUBLIC key (design #10 "sealed per-agent DSN"). When
+	// present, the Console seals each database node's DSN to it with
+	// box.SealAnonymous and delivers dsn_sealed instead of the plaintext
+	// dsn on GET /config. Empty (older agent, or key persistence failed)
+	// means the Console falls back to sending plaintext DSNs.
+	AgentPublicKey string `json:"agent_public_key,omitempty"`
 }
 
 // HostMetricsConfig is the optional /register response field that gates the
@@ -39,6 +49,94 @@ type HostMetricsConfig struct {
 	IntervalSeconds int  `json:"interval_seconds"`
 }
 
+// ConfigResponse is the GET /config bundle - the cold-path config the
+// agent fetches when the config_etag from its last heartbeat is stale.
+// Databases is nil when the feature is off for this lighthouse's plan.
+// New config kinds slot in as sibling fields here rather than growing the
+// per-heartbeat response.
+type ConfigResponse struct {
+	Databases *DatabaseGate `json:"databases,omitempty"`
+}
+
+// DatabaseGate is the databases config. On /register and /heartbeat only
+// Enabled is sent (the cheap plan-derived flag that drives live plan
+// flips); the Clusters payload with node DSNs (Option B - no local agent
+// config) is served by GET /config and fetched only when config_etag
+// changes.
+type DatabaseGate struct {
+	Enabled  bool                  `json:"enabled"`
+	Clusters []DatabaseGateCluster `json:"clusters,omitempty"`
+}
+
+// DatabaseGateCluster names one active cluster, its per-kind cadences,
+// and its node DSNs (Option B - the console delivers the connection info,
+// there is no local agent config).
+type DatabaseGateCluster struct {
+	DatabaseID               string             `json:"database_id"`
+	Engine                   string             `json:"engine"`
+	StateIntervalSeconds     int                `json:"state_interval_seconds"`
+	ParamsIntervalSeconds    int                `json:"params_interval_seconds"`
+	SlowQueryIntervalSeconds int                `json:"slow_query_interval_seconds"`
+	SizingIntervalSeconds    int                `json:"sizing_interval_seconds"`
+	SlowQueryTopN            int                `json:"slow_query_top_n"`
+	// SlowQueryLiveTTLSeconds is the REMAINING slow-query live-lease window
+	// in seconds (#24 on-demand slow queries). > 0 means a live session is
+	// active: collect slow queries every SlowQueryIntervalSeconds and
+	// self-expire this many seconds after the gate was applied. 0/absent
+	// means no live session - slow queries are not collected. A natural
+	// expiry writes nothing console-side (no new gate), so the agent must
+	// stop itself; a manual stop / duration change re-writes the lease,
+	// bumps the databases etag and re-delivers a new TTL on the next fetch.
+	SlowQueryLiveTTLSeconds int                `json:"slow_query_live_ttl_seconds,omitempty"`
+	Nodes                   []DatabaseGateNode `json:"nodes"`
+}
+
+// DatabaseGateNode is one node's connection info from the gate. NodeID is
+// the console's row id, echoed back in the snapshot for matching. Exactly
+// one of DSN / DSNSealed is populated per node (design #10): DSN is the
+// plaintext form (sent when the agent registered no public key); DSNSealed
+// is base64(std) of a NaCl anonymous sealed box (box.SealAnonymous) of the
+// DSN, sealed to the agent's public key, opened only in the agent's memory.
+type DatabaseGateNode struct {
+	NodeID    string `json:"node_id"`
+	DSN       string `json:"dsn,omitempty"`
+	DSNSealed string `json:"dsn_sealed,omitempty"`
+}
+
+// DBSnapshotRequest is the agent -> Console POST /db-snapshots body: one
+// cluster per tick, an array of node snapshots.
+type DBSnapshotRequest struct {
+	DatabaseID   string           `json:"database_id"`
+	CollectedAt  time.Time        `json:"collected_at"`
+	AgentVersion string           `json:"agent_version"`
+	Nodes        []DBNodeSnapshot `json:"nodes"`
+}
+
+// DBNodeSnapshot is one node's slice. Optional sections are omitted when
+// not collected this tick.
+type DBNodeSnapshot struct {
+	NodeID         string          `json:"node_id,omitempty"`
+	NodeKey        string          `json:"node_key"`
+	ServerIdentity string          `json:"server_identity,omitempty"`
+	Reachable      bool            `json:"reachable"`
+	Error          string          `json:"error,omitempty"`
+	Role           string          `json:"role,omitempty"`
+	EngineVersion  string          `json:"engine_version,omitempty"`
+	Fork           string          `json:"fork,omitempty"`
+	Capabilities   map[string]bool `json:"capabilities,omitempty"`
+	State          json.RawMessage `json:"state,omitempty"`
+	Replication    json.RawMessage `json:"replication,omitempty"`
+	Parameters     *DBParams       `json:"parameters,omitempty"`
+	SlowQueries    json.RawMessage `json:"slow_queries,omitempty"`
+	Sizing         json.RawMessage `json:"sizing,omitempty"`
+}
+
+// DBParams is the parameters section - a content hash + settings map.
+type DBParams struct {
+	Hash   string          `json:"hash"`
+	Values json.RawMessage `json:"values"`
+}
+
 // RegisterResponse is what the Console returns from /register. Carries the
 // per-agent operating parameters (heartbeat cadence, flap threshold) plus
 // the initial check set.
@@ -52,6 +150,7 @@ type RegisterResponse struct {
 	ConfigEtag               string             `json:"config_etag"`
 	Checks                   []CheckDef         `json:"checks"`
 	HostMetrics              *HostMetricsConfig `json:"host_metrics,omitempty"`
+	Databases                *DatabaseGate      `json:"databases,omitempty"`
 }
 
 // HeaderPair is one custom request header the Console wants the agent to
@@ -180,6 +279,29 @@ type HeartbeatRequest struct {
 	// server treats empty as "no pod-vs-node distinction" and the
 	// UI renders just the node name in that case.
 	PodHostname string `json:"pod_hostname,omitempty"`
+	// Channel-health telemetry (design #12 "channel health as data").
+	// These are agent-observed signals about the heartbeat channel
+	// itself, reported so the Console can surface a degraded link
+	// before it fails outright. All three are additive optional fields;
+	// an older Console that doesn't know them ignores unknown JSON.
+	//
+	// RTTMs is the round-trip time of the PREVIOUS heartbeat request in
+	// milliseconds (send → response received). It lags one beat by
+	// design — a beat can only report the latency of the beat before
+	// it. 0 on the first beat of a process.
+	RTTMs int64 `json:"rtt_ms,omitempty"`
+	// ClockSkewMs is (agent local clock - server `Date` header) at the
+	// previous heartbeat's response, in milliseconds. Positive means the
+	// agent clock is ahead of the Console's. 0 when the previous response
+	// carried no parseable Date header (or on the first beat). Sign is
+	// meaningful, so a negative skew is preserved on the wire.
+	ClockSkewMs int64 `json:"clock_skew_ms,omitempty"`
+	// BufferedEvents is the current depth of the agent's on-disk event
+	// buffer (undelivered state transitions awaiting a Console recovery).
+	// 0 when the agent has no buffer attached or the buffer is empty — the
+	// steady state. A rising value is a leading indicator that delivery
+	// is failing even while heartbeats still land.
+	BufferedEvents int `json:"buffered_events,omitempty"`
 }
 
 // LatencyEntry is a sparse per-check latency snapshot included in the
@@ -215,13 +337,26 @@ type CertExpiryEntry struct {
 // (NOT as plan-unsupported - that interpretation only applies to /register
 // where there's no prior collector state to preserve).
 type HeartbeatResponse struct {
-	ConfigEtag              string             `json:"config_etag"`
+	ConfigEtag string `json:"config_etag"`
+	// ConfigEtags is the per-section etag map (#11), e.g.
+	// {"checks":"<uuid>","databases":"<uuid>"}. The scalar ConfigEtag
+	// above still bumps on ANY change; this map lets the agent refetch a
+	// single section (currently only databases) when just that section
+	// moved, so a monitor edit - which bumps checks + the scalar but not
+	// databases - no longer forces a DSN-gate refetch. Absent/empty from
+	// older Consoles; the agent then falls back to the scalar etag.
+	ConfigEtags             map[string]string  `json:"config_etags,omitempty"`
 	Paused                  bool               `json:"paused"`
 	FlapProtectionThreshold int                `json:"flap_protection_threshold"`
 	RequestFullResync       bool               `json:"request_full_resync"`
 	Checks                  []CheckDef         `json:"checks,omitempty"`
 	HostMetrics             *HostMetricsConfig `json:"host_metrics,omitempty"`
+	Databases               *DatabaseGate      `json:"databases,omitempty"`
 }
+
+// DatabasesConfigSection is the /config?sections= name for the database
+// gate - the only section the agent fetches on the cold path today (#11).
+const DatabasesConfigSection = "databases"
 
 // ShutdownRequest is what the agent posts on SIGTERM (per design §4.4).
 // Best-effort — the agent does not retry; a missed /shutdown gets picked

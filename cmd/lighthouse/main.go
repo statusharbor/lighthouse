@@ -18,6 +18,7 @@ import (
 	"time"
 
 	"github.com/statusharbor/lighthouse/internal/agent"
+	"github.com/statusharbor/lighthouse/internal/agent/database"
 	"github.com/statusharbor/lighthouse/internal/agent/k8sstats"
 	"github.com/statusharbor/lighthouse/internal/discovery"
 	"github.com/statusharbor/lighthouse/internal/transport"
@@ -55,6 +56,18 @@ func main() {
 			"data_dir", cfg.Agent.DataDir, "error", err)
 	} else {
 		slog.Info("instance id loaded", "instance_id", instanceID)
+	}
+
+	// Per-install NaCl box keypair for sealed per-agent DSNs (design #10).
+	// The public key goes out on /register; the private key stays on disk
+	// (0600) and opens the sealed DSNs the Console delivers via /config. On
+	// failure we run without a key - the Console then sends plaintext DSNs.
+	keypair, err := agent.LoadOrCreateAgentKeypair(cfg.Agent.DataDir)
+	if err != nil {
+		slog.Warn("agent keypair unavailable — Console will send plaintext DSNs",
+			"data_dir", cfg.Agent.DataDir, "error", err)
+	} else {
+		slog.Info("agent keypair loaded")
 	}
 
 	client := transport.NewClient(agent.ConsoleURL, cfg.Token, instanceID)
@@ -127,11 +140,15 @@ func main() {
 	// Register, then initial sync. Both must succeed before we start
 	// heartbeats and check scheduling.
 	registerCtx, registerCancel := context.WithTimeout(ctx, 30*time.Second)
-	regResp, err := client.Register(registerCtx, transport.RegisterRequest{
+	regReq := transport.RegisterRequest{
 		AgentVersion:  agent.AgentVersion,
 		AgentHostname: hostname,
 		Runtime:       runtime,
-	})
+	}
+	if keypair != nil {
+		regReq.AgentPublicKey = keypair.PublicKeyBase64()
+	}
+	regResp, err := client.Register(registerCtx, regReq)
 	registerCancel()
 	if err != nil {
 		if errors.Is(err, transport.ErrLighthouseGone) {
@@ -181,6 +198,30 @@ func main() {
 	if hostMetricsOnly {
 		slog.Info("agent role is host_metrics — skipping check scheduler + discovery watcher",
 			"role", cfg.Agent.Role)
+	}
+
+	// Databases collector. CENTRAL role only - the host_metrics DaemonSet
+	// has one pod per k8s node, and letting all of them collect would hit
+	// the customer DB N times. Gating to the single central Deployment pod
+	// (same owner as checks + discovery) means exactly one collector, and
+	// on a node drop k8s reschedules that pod under the same lighthouse_id
+	// so collection resumes automatically - no cross-lighthouse failover
+	// needed for the common topology. The Console gate carries the node
+	// DSNs (Option B - no local config) and drives live plan flips.
+	if !hostMetricsOnly {
+		// Only hand the controller an opener when we actually have a key -
+		// a nil *AgentKeypair wrapped in the interface would be non-nil and
+		// panic on use, so pass a nil interface instead.
+		var dsnOpener database.SealedDSNOpener
+		if keypair != nil {
+			dsnOpener = keypair
+		}
+		dbController := database.NewController(client, agent.AgentVersion, dsnOpener)
+		r.SetDatabaseGateHandler(dbController.ApplyGate)
+		// Register carries only the enabled flag; fetch the cluster+DSN
+		// payload from /config when enabled (same path as each heartbeat).
+		r.ApplyDatabaseGate(ctx, regResp.Databases, regResp.ConfigEtag)
+		defer dbController.Stop()
 	}
 
 	// Optional Kubernetes Ingress discovery. Enabled via the
@@ -323,3 +364,4 @@ func configureLogging(level string) {
 	h := slog.NewJSONHandler(os.Stdout, &slog.HandlerOptions{Level: lvl})
 	slog.SetDefault(slog.New(h))
 }
+
