@@ -4,6 +4,7 @@ package procusage
 
 import (
 	"context"
+	"fmt"
 	"os"
 	"os/exec"
 	"strings"
@@ -72,12 +73,13 @@ func TestUsage_Kernel(t *testing.T) {
 	}
 	_ = f.Close()
 	defer func() { _ = os.Remove(f.Name()) }()
-	// Disk latency needs I/O that reaches a block device. A temp dir on a
-	// virtual filesystem (a VM's shared root, tmpfs) has none and may
-	// refuse O_DIRECT, so there only CPU and file I/O are checked.
-	var fs unix.Statfs_t
-	onDisk := unix.Statfs(f.Name(), &fs) == nil &&
-		fs.Type != unix.TMPFS_MAGIC && fs.Type != unix.V9FS_MAGIC && fs.Type != unix.FUSE_SUPER_MAGIC
+	// Disk latency needs I/O that reaches a block device. A temp dir
+	// elsewhere (vimto's shared root, tmpfs, overlay) may have none and
+	// may refuse O_DIRECT, so there only CPU and file I/O are checked; set
+	// TMPDIR to a disk-backed directory to cover latency too.
+	var st unix.Stat_t
+	onDisk := unix.Stat(f.Name(), &st) == nil &&
+		fileExists(fmt.Sprintf("/sys/dev/block/%d:%d", unix.Major(st.Dev), unix.Minor(st.Dev)))
 	args := []string{"if=/dev/zero", "of=" + f.Name(), "bs=1M", "count=5"}
 	if onDisk {
 		args = append(args, "oflag=direct")
@@ -116,8 +118,13 @@ func TestUsage_Kernel(t *testing.T) {
 	}
 	switch {
 	case !onDisk:
-		t.Logf("temp dir is not on a block device: disk latency not checked")
+		t.Logf("temp dir is not on a block device: disk latency not checked (set TMPDIR to cover it)")
 	case !found:
 		t.Errorf("no disk latency: %v", sink.gauges)
 	}
+}
+
+func fileExists(path string) bool {
+	_, err := os.Stat(path)
+	return err == nil
 }
