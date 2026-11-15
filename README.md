@@ -75,6 +75,23 @@ The `lighthouse-data` named volume persists the offline buffer across
 container restarts; without it, results captured during a Console outage
 are lost when the container is recreated.
 
+**4. With eBPF collectors** (Linux hosts, see [eBPF collectors](#ebpf-collectors)).
+eBPF needs root, two capabilities and the host PID namespace, which the
+default non-root image does not have:
+
+```bash
+docker run -d --name lighthouse \
+  --user 0 --pid=host --cap-drop ALL \
+  --cap-add BPF --cap-add PERFMON --cap-add SYS_PTRACE --cap-add DAC_READ_SEARCH \
+  --cap-add NET_ADMIN --cap-add SYS_RESOURCE \
+  -e LIGHTHOUSE_TOKEN=<token-from-console> \
+  -v lighthouse-data:/var/lib/lighthouse \
+  ghcr.io/statusharbor/lighthouse:latest
+```
+
+On kernels before 5.8 replace `--cap-add BPF --cap-add PERFMON` with
+`--cap-add SYS_ADMIN`.
+
 ### Kubernetes
 
 Two install paths live in the [`deploy/`](./deploy) directory.
@@ -124,6 +141,22 @@ helm install lighthouse deploy/helm/lighthouse \
 
 See [`deploy/helm/lighthouse/values.yaml`](./deploy/helm/lighthouse/values.yaml)
 for the full list of tunables.
+
+eBPF collectors run only in the per-node DaemonSet and are switched on
+per feature in the Console (the Lighthouse page's "eBPF features"); the
+chart grants the privileges with the DaemonSet:
+
+```bash
+helm upgrade --install lighthouse oci://ghcr.io/statusharbor/charts/lighthouse \
+  --namespace lighthouse --reuse-values --set daemonset.enabled=true
+kubectl label namespace lighthouse pod-security.kubernetes.io/enforce=privileged
+```
+
+To keep eBPF off the nodes whatever the Console says, add
+`--set daemonset.ebpf.enabled=false`. Otherwise the node pods run as root with `BPF`, `PERFMON`, `SYS_PTRACE`,
+`DAC_READ_SEARCH`, `NET_ADMIN` and `SYS_RESOURCE` added and `hostPID: true`, and may list pods. The central
+StatefulSet stays non-root with all capabilities dropped and never loads
+eBPF programs. GKE Autopilot and EKS Fargate do not allow these settings.
 
 #### Health probes
 
@@ -230,6 +263,7 @@ file:
 | `LIGHTHOUSE_TOKEN`     | `token`           | Required (one of YAML or env must be set)   |
 | `LIGHTHOUSE_DATA_DIR`  | `agent.data_dir`  | Override the offline-buffer location        |
 | `LIGHTHOUSE_LOG_LEVEL` | `agent.log_level` | `info` (default) or `debug`                 |
+| `LIGHTHOUSE_EBPF`      | `agent.ebpf`      | `off` is the local eBPF kill switch         |
 
 If you see `event buffer disabled (data dir not writable)` in the logs,
 the agent can't create `/var/lib/lighthouse` — set `LIGHTHOUSE_DATA_DIR`
@@ -249,6 +283,94 @@ transmits its `lighthouse_id` — the server resolves it from the token.
 - Heartbeats every 15 seconds so the Console knows it's alive.
 - Buffers results to local disk if the Console is unreachable; flushes
   on reconnect.
+- On Linux, optionally runs eBPF collectors (see below).
+
+## eBPF collectors
+
+Lighthouse can observe the host from the kernel with eBPF: which
+processes run in which container and pod, and (as features ship) kernel
+events and network quality around an incident. It is off by default and
+needs all three of:
+
+1. A Linux host with kernel 5.8 or newer and BTF
+   (`/sys/kernel/btf/vmlinux`). On a host without BTF, without the
+   capabilities or with kernel lockdown in confidentiality mode, the
+   collectors report why they are unsupported and everything else keeps
+   working.
+2. The privileges: the systemd unit written by `install.sh` already has
+   them; for Docker and Kubernetes see the install sections above.
+3. The collectors enabled for the Lighthouse in the Console.
+
+The Lighthouse page in the Console shows each collector's state per node
+and the reason when it is not running.
+
+**What is collected today:**
+
+- `hello`: the number of process starts on the host.
+- `identity`: in the agent's memory only, each process's name,
+  executable path, container and pod.
+- `incident`: OOM kills and abnormal process exits (command, pid,
+  container and pod, signal or exit status, and the pid and command of
+  whoever sent a fatal signal), plus counters of failed TCP connects,
+  resets and retransmits by peer address and port. Exits with a non-zero
+  status are only reported for services, so a failing `grep` stays
+  silent.
+- `discovery`: the TCP ports processes listen on (port, bind address,
+  network namespace, command, executable path, container and pod), read
+  once from `/proc` at start and then from the kernel as listeners open
+  and close (a listener that lives for less than 15 seconds is not
+  reported), and outbound connections counted per source service and
+  destination address and port. Never source ports.
+- `network`: per source service and destination, smoothed RTT,
+  retransmit ratio, connect time and bytes, from the kernel's own TCP
+  state; and per DNS resolver, query count, latency and failures, from
+  the 12-byte DNS header only (never the names queried or the answers).
+- `usage`: per interval, the top 10 processes, containers or services by
+  CPU, memory, file I/O, device I/O and network bytes, plus an "other"
+  remainder; CPU of processes that start and exit between polls; disk
+  latency percentiles per device. The CPU, memory and device I/O part
+  reads `/proc` and cgroup files and also runs without eBPF.
+- `requests` (off unless OBI is set up): request rate, server-error
+  share and latency per service and route for HTTP, gRPC and SQL
+  clients, measured by [OpenTelemetry eBPF
+  Instrumentation](https://opentelemetry.io/docs/zero-code/obi/) (OBI)
+  running as a separate process. Only the service, route template,
+  method class, status class and SQL operation type leave the host;
+  headers, bodies, query strings, raw paths and SQL text never do. Set
+  `agent.obi.path` (or `LIGHTHOUSE_OBI_PATH`) to an OBI binary for the
+  agent to supervise; on Kubernetes set `daemonset.obi.enabled` in the
+  chart to run it as a second container.
+- Traces (with Real traffic, when switched on in the Console): OBI's
+  request spans go to the agent on loopback, which keeps only an
+  allow-list of attributes (templated routes and paths, status, method,
+  database system and operation, exception type, a client span's peer)
+  and drops query strings, full URLs, SQL text, headers, bodies,
+  exception messages and callers' addresses before anything leaves the
+  host. It keeps every failed trace; within 5 spans a second it keeps
+  the slowest first, then a sample of the rest. OBI's context
+  propagation is always off: the
+  agent never writes into your traffic.
+- Check traces: each check run becomes a trace with DNS, connect, TLS
+  and time-to-first-byte children. An HTTP check with "Send trace
+  header" ticked (off by default) adds a W3C `traceparent` header so the
+  target's traces continue the check's: Go services under OBI and
+  services with an OpenTelemetry SDK do; Python, Node.js and Java
+  services under OBI start their own trace, since OBI reads the header
+  there only with propagation on.
+
+Command-line arguments, environment variables, file contents and network
+payloads are never read. Collector programs are not
+pinned, so the kernel removes them when the agent exits. OBI (Real
+traffic) pins one map, its trace context, which it would leave behind:
+the agent gives it a private directory,
+`/sys/fs/bpf/statusharbor-obi-<agent pid>`, and deletes it when OBI
+stops (directories of agents that died are swept at the next start).
+The Kubernetes sidecar has no host BPF filesystem, so its OBI pins
+nothing on the node.
+
+**Switching it off:** disable the collectors in the Console, or set
+`LIGHTHOUSE_EBPF=off` (or `agent.ebpf: off`) on the host. The local
+setting always wins over the Console and loads nothing.
 
 ## Verifying release artifacts
 

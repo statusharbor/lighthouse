@@ -11,6 +11,7 @@ import (
 	"flag"
 	"fmt"
 	"log/slog"
+	"net/http"
 	"os"
 	"os/signal"
 	"sync"
@@ -21,6 +22,7 @@ import (
 	"github.com/statusharbor/lighthouse/internal/agent/database"
 	"github.com/statusharbor/lighthouse/internal/agent/k8sstats"
 	"github.com/statusharbor/lighthouse/internal/discovery"
+	"github.com/statusharbor/lighthouse/internal/traces"
 	"github.com/statusharbor/lighthouse/internal/transport"
 )
 
@@ -30,6 +32,10 @@ var (
 
 func main() {
 	flag.Parse()
+	if *dryRun && os.Getenv(agent.EnvToken) == "" {
+		// The dry run never connects, so it needs no token.
+		_ = os.Setenv(agent.EnvToken, "dry-run")
+	}
 
 	cfg, err := agent.LoadFile(*configPath)
 	if err != nil {
@@ -37,6 +43,13 @@ func main() {
 		os.Exit(2)
 	}
 	configureLogging(cfg.Agent.LogLevel)
+	if *dryRun {
+		if err := runDryRun(cfg); err != nil {
+			slog.Error("dry run failed", "error", err)
+			os.Exit(1)
+		}
+		return
+	}
 
 	hostname, _ := os.Hostname()
 	slog.Info("lighthouse starting",
@@ -144,6 +157,7 @@ func main() {
 		AgentVersion:  agent.AgentVersion,
 		AgentHostname: hostname,
 		Runtime:       runtime,
+		Role:          cfg.Agent.Role,
 	}
 	if keypair != nil {
 		regReq.AgentPublicKey = keypair.PublicKeyBase64()
@@ -172,13 +186,51 @@ func main() {
 	// the default info level these logs are silent; flipping
 	// agent.log_level=debug surfaces redacted check inputs/outputs for
 	// troubleshooting (per design §11).
-	executor := agent.NewLoggingExecutor(newRealExecutor(), nil)
+	// Check traces (status-harbor docs/eBPF/11-traces.md): spans per check
+	// run, sent while the Console's traces gate has them on.
+	traceExporter := traces.NewExporter(agent.ConsoleURL, cfg.Token,
+		&http.Client{Timeout: 30 * time.Second, Transport: transport.NewAgentTransport()})
+	checkTracer := traces.NewCheckTracer(traceExporter, metricHostname)
+	// The eBPF series' host label, so OBI spans join the map's flows.
+	tracesPipeline := traces.NewPipeline(traceExporter, nodeName, 5)
+	checkTracer.OnStart = tracesPipeline.MarkCheck
+	go traceExporter.Run(ctx)
+	go tracesPipeline.Run(ctx)
+	executor := agent.NewLoggingExecutor(newRealExecutor(checkTracer), nil)
 	r := agent.NewRunner(cfg, client, executor, nodeName, hostname)
+	r.SetTracesGate(func(g *transport.TracesGate) {
+		checkTracer.SetEnabled(g != nil && g.Checks)
+		if g == nil {
+			tracesPipeline.SetGate(false, 0, 100)
+			return
+		}
+		sample := 100
+		if g.SamplePercent != nil {
+			sample = *g.SamplePercent
+		}
+		tracesPipeline.SetGate(g.Services, g.SpansPerSecond, sample)
+	})
+	r.ApplyTracesGate(regResp.Traces)
 	if buf != nil {
 		r.SetBuffer(buf)
 	}
 	r.SetHealthState(health)
 	r.SetEtag(regResp.ConfigEtag)
+
+	// eBPF collectors (docs/eBPF/01-foundation.md). Nil manager on the
+	// central pod on Kubernetes and off Linux. Collectors start only when
+	// the Console's ebpf gate names them; LIGHTHOUSE_EBPF=off overrides.
+	ebpfManager, ebpfC, ebpfBatcher := agent.NewEBPF(ctx, cfg, discovery.IsKubernetes(), func(ctx context.Context, events []transport.EBPFEnvelope) error {
+		_, err := client.SendEBPFEvents(ctx, transport.EBPFEventsRequest{Events: events})
+		return err
+	}, nodeName, r.Checks, tracesPipeline)
+	if ebpfManager != nil {
+		r.SetEBPF(ebpfManager)
+		r.SetTracesPipeline(tracesPipeline)
+		r.ApplyEBPFGate(regResp.EBPF)
+		defer ebpfManager.Stop()
+		go ebpfBatcher.Run(ctx)
+	}
 	r.ApplyConfig(
 		agent.CheckDefsFromTransport(regResp.Checks),
 		regResp.FlapProtectionThreshold,
@@ -260,6 +312,13 @@ func main() {
 				return err
 			}
 			go w.Run(ctx)
+			go discovery.RunAddressMap(ctx, cfg.Discovery.Namespaces, time.Minute, func(ctx context.Context, m []discovery.AddressEntry) error {
+				items := make([]transport.K8sAddress, len(m))
+				for i, e := range m {
+					items[i] = transport.K8sAddress(e)
+				}
+				return client.SendK8sAddresses(ctx, transport.K8sAddressesRequest{Items: items})
+			})
 			slog.Info("discovery watcher started", "namespaces", cfg.Discovery.Namespaces)
 		}
 	}
@@ -340,7 +399,7 @@ func main() {
 				slog.Info("k8sstats collector started")
 			}
 		}
-		r.RunHostMetrics(ctx, regResp.HostMetrics, agent.NewMultiCollector(hostC, k8sC), sender)
+		r.RunHostMetrics(ctx, regResp.HostMetrics, agent.NewMultiCollector(hostC, k8sC, ebpfC), sender)
 	}()
 
 	<-ctx.Done()
@@ -364,4 +423,3 @@ func configureLogging(level string) {
 	h := slog.NewJSONHandler(os.Stdout, &slog.HandlerOptions{Level: lvl})
 	slog.SetDefault(slog.New(h))
 }
-

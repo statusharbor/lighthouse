@@ -76,6 +76,9 @@ type CheckDefinition struct {
 	RequestBody        string
 	ExpectedHeaders    []ExpectedHeader
 	SkipTLSVerify      bool
+	// TraceHeader makes an HTTP check send traceparent while check
+	// traces are on; off unless the check asks for it.
+	TraceHeader bool
 	// DNS-only fields. DNSRecordType defaults to "A" when empty;
 	// DNSExpectedIPs are the expected resolved value(s); DNSResolver is an
 	// optional explicit resolver `host` or `host:port` (default port 53).
@@ -112,6 +115,7 @@ func (d CheckDefinition) Equal(other CheckDefinition) bool {
 		d.KeywordPresent != other.KeywordPresent ||
 		d.RequestBody != other.RequestBody ||
 		d.SkipTLSVerify != other.SkipTLSVerify ||
+		d.TraceHeader != other.TraceHeader ||
 		d.DNSRecordType != other.DNSRecordType ||
 		d.DNSResolver != other.DNSResolver {
 		return false

@@ -31,6 +31,10 @@ type RegisterRequest struct {
 	// dsn on GET /config. Empty (older agent, or key persistence failed)
 	// means the Console falls back to sending plaintext DSNs.
 	AgentPublicKey string `json:"agent_public_key,omitempty"`
+	// Role is "host_metrics" for a DaemonSet node agent, so the Console
+	// keeps the Lighthouse's hostname from the central agent; empty for
+	// the central agent.
+	Role string `json:"role,omitempty"`
 }
 
 // HostMetricsConfig is the optional /register response field that gates the
@@ -72,13 +76,13 @@ type DatabaseGate struct {
 // and its node DSNs (Option B - the console delivers the connection info,
 // there is no local agent config).
 type DatabaseGateCluster struct {
-	DatabaseID               string             `json:"database_id"`
-	Engine                   string             `json:"engine"`
-	StateIntervalSeconds     int                `json:"state_interval_seconds"`
-	ParamsIntervalSeconds    int                `json:"params_interval_seconds"`
-	SlowQueryIntervalSeconds int                `json:"slow_query_interval_seconds"`
-	SizingIntervalSeconds    int                `json:"sizing_interval_seconds"`
-	SlowQueryTopN            int                `json:"slow_query_top_n"`
+	DatabaseID               string `json:"database_id"`
+	Engine                   string `json:"engine"`
+	StateIntervalSeconds     int    `json:"state_interval_seconds"`
+	ParamsIntervalSeconds    int    `json:"params_interval_seconds"`
+	SlowQueryIntervalSeconds int    `json:"slow_query_interval_seconds"`
+	SizingIntervalSeconds    int    `json:"sizing_interval_seconds"`
+	SlowQueryTopN            int    `json:"slow_query_top_n"`
 	// SlowQueryLiveTTLSeconds is the REMAINING slow-query live-lease window
 	// in seconds (#24 on-demand slow queries). > 0 means a live session is
 	// active: collect slow queries every SlowQueryIntervalSeconds and
@@ -151,6 +155,8 @@ type RegisterResponse struct {
 	Checks                   []CheckDef         `json:"checks"`
 	HostMetrics              *HostMetricsConfig `json:"host_metrics,omitempty"`
 	Databases                *DatabaseGate      `json:"databases,omitempty"`
+	EBPF                     *EBPFGate          `json:"ebpf,omitempty"`
+	Traces                   *TracesGate        `json:"traces,omitempty"`
 }
 
 // HeaderPair is one custom request header the Console wants the agent to
@@ -188,6 +194,7 @@ type CheckDef struct {
 	RequestBody        string           `json:"request_body,omitempty"`
 	ExpectedHeaders    []ExpectedHeader `json:"expected_headers,omitempty"`
 	SkipTLSVerify      bool             `json:"skip_tls_verify,omitempty"`
+	TraceHeader        bool             `json:"trace_header,omitempty"`
 	// DNS-only fields. DNSRecordType defaults to "A" when empty;
 	// DNSExpectedIPs are the expected resolved value(s) (any record type,
 	// not just IPs despite the name); DNSResolver is an optional explicit
@@ -279,6 +286,15 @@ type HeartbeatRequest struct {
 	// server treats empty as "no pod-vs-node distinction" and the
 	// UI renders just the node name in that case.
 	PodHostname string `json:"pod_hostname,omitempty"`
+	// HostFacts is the fleet-survey report (kernel, BTF, cgroup, container
+	// runtime, capabilities) used to set the eBPF support matrix. Sent on
+	// heartbeats until one is acked, then omitted. Nil on non-Linux hosts.
+	HostFacts *HostFacts `json:"host_facts,omitempty"`
+	// EBPFStatus is the per-collector eBPF status report
+	// (docs/eBPF/01-foundation.md). Sent when it changes until a heartbeat
+	// carrying it succeeds; omitted otherwise and on agents that run no
+	// eBPF manager (central pod on Kubernetes, non-Linux hosts).
+	EBPFStatus []EBPFStatus `json:"ebpf_status,omitempty"`
 	// Channel-health telemetry (design #12 "channel health as data").
 	// These are agent-observed signals about the heartbeat channel
 	// itself, reported so the Console can surface a degraded link
@@ -352,6 +368,8 @@ type HeartbeatResponse struct {
 	Checks                  []CheckDef         `json:"checks,omitempty"`
 	HostMetrics             *HostMetricsConfig `json:"host_metrics,omitempty"`
 	Databases               *DatabaseGate      `json:"databases,omitempty"`
+	EBPF                    *EBPFGate          `json:"ebpf,omitempty"`
+	Traces                  *TracesGate        `json:"traces,omitempty"`
 }
 
 // DatabasesConfigSection is the /config?sections= name for the database
@@ -391,4 +409,110 @@ type DiscoverySnapshotRequest struct {
 // persisted.
 type DiscoverySnapshotResponse struct {
 	Count int `json:"count"`
+}
+
+// HostFacts describes the host kernel and the agent's privileges. Inside a
+// container the kernel, BTF and cgroup fields still describe the host;
+// ContainerRuntime is the runtime the agent itself runs under ("" when not
+// containerized) and HostRuntimes lists runtime sockets visible to the agent.
+type HostFacts struct {
+	KernelRelease    string   `json:"kernel_release"`
+	Arch             string   `json:"arch"`
+	BTF              bool     `json:"btf"`
+	CgroupVersion    string   `json:"cgroup_version"`
+	ContainerRuntime string   `json:"container_runtime"`
+	HostRuntimes     []string `json:"host_runtimes,omitempty"`
+	Capabilities     []string `json:"capabilities"`
+	// Addresses are the host's IP addresses, so the Console can resolve
+	// dependency edges and monitor targets to this host.
+	Addresses []string `json:"addresses,omitempty"`
+}
+
+// TracesGate is the remote traces flag set on /register and /heartbeat
+// (status-harbor docs/eBPF/11-traces.md). Nil (older Console, or nothing
+// in the plan) means no spans are sent.
+type TracesGate struct {
+	Checks         bool `json:"checks"`
+	Services       bool `json:"services"`
+	SpansPerSecond int  `json:"spans_per_second"`
+	// SamplePercent is the share of ordinary traces to keep (0..100),
+	// set in the Console's admin UI. Nil (older Console) keeps all.
+	SamplePercent *int `json:"sample_percent,omitempty"`
+}
+
+// EBPFGate is the remote eBPF flag set on /register and /heartbeat: the
+// collectors this Lighthouse may run. Nil (older Console, or the plan has
+// no eBPF features) means every collector is off. The local kill switch
+// (LIGHTHOUSE_EBPF=off) wins over it.
+type EBPFGate struct {
+	Collectors []string `json:"collectors"`
+	// Quotas are the per-Lighthouse cardinality limits for the plan
+	// (docs/eBPF/07-storage.md). Nil keeps the agent's defaults.
+	Quotas *EBPFQuotas `json:"quotas,omitempty"`
+	// Limited lists collectors the plan runs in a reduced mode
+	// (docs/eBPF/08-pricing.md): "incident" without network counters.
+	Limited []string `json:"limited,omitempty"`
+}
+
+// EBPFQuotas mirrors ebpf.Quotas on the wire; zero fields keep defaults.
+type EBPFQuotas struct {
+	Destinations       int `json:"destinations,omitempty"`
+	PublicDestinations int `json:"public_destinations,omitempty"`
+	Resolvers          int `json:"resolvers,omitempty"`
+	Services           int `json:"services,omitempty"`
+	Routes             int `json:"routes,omitempty"`
+	EventsPerDay       int `json:"events_per_day,omitempty"`
+	NewSeriesPerDay    int `json:"new_series_per_day,omitempty"`
+}
+
+// EBPFStatus is one collector's line in the eBPF status report. State is
+// running, disabled, unsupported, degraded or failed; Reason is a code
+// such as no_btf or missing_capability; Detail is free text.
+type EBPFStatus struct {
+	Collector string `json:"collector"`
+	State     string `json:"state"`
+	Reason    string `json:"reason,omitempty"`
+	Detail    string `json:"detail,omitempty"`
+}
+
+// EBPFEnvelope is the one wire shape for every eBPF collector event
+// (docs/eBPF/01-foundation.md, "Data contract"). Schema is bumped on an
+// incompatible change; readers ignore unknown fields. (HostID, BootID,
+// Seq) is the idempotency key: Seq starts at the agent's start time in
+// nanoseconds and only grows, so it stays unique across agent restarts
+// within one boot, and a re-sent batch stores nothing new.
+type EBPFEnvelope struct {
+	Schema    int             `json:"schema"`
+	HostID    string          `json:"host_id"`
+	BootID    string          `json:"boot_id"`
+	Seq       int64           `json:"seq"`
+	Collector string          `json:"collector"`
+	Kind      string          `json:"kind"`
+	Time      time.Time       `json:"time"`
+	Payload   json.RawMessage `json:"payload"`
+}
+
+// EBPFEventsRequest is the body of POST /api/lighthouse/v1/ebpf/events.
+type EBPFEventsRequest struct {
+	Events []EBPFEnvelope `json:"events"`
+}
+
+// EBPFEventsResponse acks a batch; Received counts newly stored events
+// (duplicates of an earlier batch are not counted).
+type EBPFEventsResponse struct {
+	Received int `json:"received"`
+}
+
+// K8sAddressesRequest is the central pod's map of cluster IPs (Service
+// ClusterIPs and pod IPs) to Services and workloads. Snapshot: it replaces
+// the previous one.
+type K8sAddressesRequest struct {
+	Items []K8sAddress `json:"items"`
+}
+
+type K8sAddress struct {
+	IP        string `json:"ip"`
+	Namespace string `json:"namespace"`
+	Service   string `json:"service,omitempty"`
+	Workload  string `json:"workload,omitempty"`
 }

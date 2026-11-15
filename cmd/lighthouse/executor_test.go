@@ -23,7 +23,7 @@ func TestRealExecutor_HTTP(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	obs := newRealExecutor().Run(context.Background(), agent.CheckDefinition{
+	obs := newRealExecutor(nil).Run(context.Background(), agent.CheckDefinition{
 		ID: "h", Type: "http", URL: srv.URL, Method: "GET",
 		ExpectedStatusCode: 200, TimeoutSeconds: 5,
 	})
@@ -38,7 +38,7 @@ func TestRealExecutor_HTTPS(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	obs := newRealExecutor().Run(context.Background(), agent.CheckDefinition{
+	obs := newRealExecutor(nil).Run(context.Background(), agent.CheckDefinition{
 		ID: "hs", Type: "https", URL: srv.URL, Method: "GET",
 		ExpectedStatusCode: 200, SkipTLSVerify: true, TimeoutSeconds: 5,
 	})
@@ -54,7 +54,7 @@ func TestRealExecutor_TCP(t *testing.T) {
 	}
 	defer func() { _ = ln.Close() }()
 
-	obs := newRealExecutor().Run(context.Background(), agent.CheckDefinition{
+	obs := newRealExecutor(nil).Run(context.Background(), agent.CheckDefinition{
 		ID: "t", Type: "tcp", URL: ln.Addr().String(), TimeoutSeconds: 5,
 	})
 	if obs.State != agent.StateUp {
@@ -82,7 +82,7 @@ func TestRealExecutor_UDP(t *testing.T) {
 	}()
 	port := conn.LocalAddr().(*net.UDPAddr).Port
 
-	obs := newRealExecutor().Run(context.Background(), agent.CheckDefinition{
+	obs := newRealExecutor(nil).Run(context.Background(), agent.CheckDefinition{
 		ID: "u", Type: "udp", URL: fmt.Sprintf("127.0.0.1:%d", port), TimeoutSeconds: 1,
 	})
 	if obs.State != agent.StateUp {
@@ -96,7 +96,7 @@ func TestRealExecutor_SSL(t *testing.T) {
 	srv := httptest.NewTLSServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {}))
 	defer srv.Close()
 
-	obs := newRealExecutor().Run(context.Background(), agent.CheckDefinition{
+	obs := newRealExecutor(nil).Run(context.Background(), agent.CheckDefinition{
 		ID: "s", Type: "ssl", URL: srv.URL, TimeoutSeconds: 5,
 	})
 	if obs.State != agent.StateUp {
@@ -107,7 +107,7 @@ func TestRealExecutor_SSL(t *testing.T) {
 func TestRealExecutor_DNS(t *testing.T) {
 	// localhost resolves to loopback deterministically (Go special-cases it),
 	// so this exercises the dns dispatch without external network.
-	obs := newRealExecutor().Run(context.Background(), agent.CheckDefinition{
+	obs := newRealExecutor(nil).Run(context.Background(), agent.CheckDefinition{
 		ID: "d", Type: "dns", URL: "localhost",
 		DNSRecordType: "A", DNSExpectedIPs: []string{"127.0.0.1"}, TimeoutSeconds: 5,
 	})
@@ -117,7 +117,7 @@ func TestRealExecutor_DNS(t *testing.T) {
 }
 
 func TestRealExecutor_UnknownType(t *testing.T) {
-	obs := newRealExecutor().Run(context.Background(), agent.CheckDefinition{
+	obs := newRealExecutor(nil).Run(context.Background(), agent.CheckDefinition{
 		ID: "x", Type: "bogus", TimeoutSeconds: 5,
 	})
 	if obs.State != agent.StateDown {

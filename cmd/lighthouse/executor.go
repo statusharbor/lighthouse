@@ -11,17 +11,34 @@ import (
 
 	"github.com/statusharbor/lighthouse/internal/agent"
 	"github.com/statusharbor/lighthouse/internal/checks"
+	"github.com/statusharbor/lighthouse/internal/traces"
 )
 
 // realExecutor dispatches to the appropriate protocol-level check based on
 // CheckDefinition.Type. Lives in cmd/lighthouse rather than internal/agent
 // to keep the agent package free of internal/checks dependencies (the
 // executor is the seam between the two).
-type realExecutor struct{}
+//
+// tracer records a span per run while check traces are on
+// (status-harbor docs/eBPF/11-traces.md); nil-safe.
+type realExecutor struct {
+	tracer *traces.CheckTracer
+}
 
-func newRealExecutor() *realExecutor { return &realExecutor{} }
+func newRealExecutor(tracer *traces.CheckTracer) *realExecutor { return &realExecutor{tracer: tracer} }
 
 func (e *realExecutor) Run(ctx context.Context, def agent.CheckDefinition) agent.CheckObservation {
+	tr := e.tracer.Start(def.TraceHeader)
+	start := time.Now()
+	obs := e.run(ctx, def, tr)
+	e.tracer.Finish(tr, traces.Run{
+		CheckID: def.ID, CheckType: strings.ToLower(def.Type), Name: def.Name,
+		Start: start, End: time.Now(), Up: obs.State == agent.StateUp, StatusCode: obs.StatusCode,
+	})
+	return obs
+}
+
+func (e *realExecutor) run(ctx context.Context, def agent.CheckDefinition, tr *checks.Trace) agent.CheckObservation {
 	timeout := time.Duration(def.TimeoutSeconds) * time.Second
 	if timeout <= 0 {
 		timeout = 5 * time.Second
@@ -48,6 +65,7 @@ func (e *realExecutor) Run(ctx context.Context, def agent.CheckDefinition) agent
 			RequestHeaders:     rh,
 			RequestBody:        def.RequestBody,
 			ExpectedHeaders:    eh,
+			Trace:              tr,
 		}))
 	case "tcp":
 		host, port, err := checks.ParseTCPTarget(def.URL, 0)

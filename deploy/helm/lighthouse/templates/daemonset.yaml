@@ -62,7 +62,8 @@ spec:
       # collector we only need the hostPath mount, but flipping
       # hostPID off here without a values-knob would be a breaking
       # change later.
-      hostPID: {{ .Values.daemonset.hostPID | default false }}
+      # eBPF needs the host PID namespace: the kernel reports host pids.
+      hostPID: {{ or .Values.daemonset.hostPID .Values.daemonset.ebpf.enabled }}
       {{- with .Values.daemonset.podSecurityContext | default .Values.podSecurityContext }}
       securityContext:
         {{- toYaml . | nindent 8 }}
@@ -97,6 +98,22 @@ spec:
               valueFrom:
                 fieldRef:
                   fieldPath: spec.nodeName
+            # The node's address, reported in host facts so the Console
+            # can resolve dependency edges to this host.
+            - name: LIGHTHOUSE_HOST_IP
+              valueFrom:
+                fieldRef:
+                  fieldPath: status.hostIP
+            {{- if and .Values.daemonset.ebpf.enabled .Values.daemonset.obi.enabled }}
+            - name: LIGHTHOUSE_OBI_METRICS_URL
+              value: "http://127.0.0.1:{{ .Values.daemonset.obi.port }}/metrics"
+            {{- end }}
+            {{- if not .Values.daemonset.ebpf.enabled }}
+            # Local eBPF kill switch: nothing is loaded, whatever the
+            # Console's remote flags say.
+            - name: LIGHTHOUSE_EBPF
+              value: "off"
+            {{- end }}
             {{- with .Values.daemonset.extraEnv }}
             {{- toYaml . | nindent 12 }}
             {{- end }}
@@ -140,10 +157,60 @@ spec:
             {{- end }}
           resources:
             {{- toYaml (.Values.daemonset.resources | default .Values.resources) | nindent 12 }}
-          {{- with .Values.daemonset.containerSecurityContext | default .Values.containerSecurityContext }}
+          {{- $csc := deepCopy (.Values.daemonset.containerSecurityContext | default .Values.containerSecurityContext | default dict) }}
+          {{- if .Values.daemonset.ebpf.enabled }}
+          {{- $caps := deepCopy (get $csc "capabilities" | default dict) }}
+          {{- $_ := set $caps "add" .Values.daemonset.ebpf.capabilities }}
+          {{- $_ := set $csc "capabilities" $caps }}
+          {{- end }}
+          {{- with $csc }}
           securityContext:
             {{- toYaml . | nindent 12 }}
           {{- end }}
+        {{- if and .Values.daemonset.ebpf.enabled .Values.daemonset.obi.enabled }}
+        # Passive request metrics (docs/eBPF/06): OpenTelemetry eBPF
+        # Instrumentation as its own container with its own privileges, so
+        # a crash or CPU spike stays out of the agent. It shares the pod's
+        # network namespace; the agent reads its Prometheus endpoint on
+        # loopback (LIGHTHOUSE_OBI_METRICS_URL above).
+        - name: obi
+          image: "{{ .Values.daemonset.obi.image.repository }}:{{ .Values.daemonset.obi.image.tag }}"
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          env:
+            - name: OTEL_EBPF_PROMETHEUS_PORT
+              value: {{ .Values.daemonset.obi.port | quote }}
+            - name: OTEL_EBPF_OPEN_PORT
+              value: {{ .Values.daemonset.obi.openPorts | quote }}
+            - name: OTEL_EBPF_LOG_LEVEL
+              value: WARN
+            # The agent maps OBI's instance label (host:pid) to pods
+            # itself; OBI's own decorator would need cluster-wide watch
+            # on pods and nodes.
+            - name: OTEL_EBPF_KUBE_METADATA_ENABLE
+              value: "false"
+            # Read-only: OBI never writes trace context into traffic
+            # (status-harbor docs/eBPF/11-traces.md); this also keeps its
+            # TC programs off Cilium clusters.
+            - name: OTEL_EBPF_BPF_CONTEXT_PROPAGATION
+              value: disabled
+            {{- if .Values.daemonset.obi.traces }}
+            # Spans go to the agent's receiver on the pod's loopback, which
+            # filters and samples them and drops them while Traces is off
+            # in the Console.
+            - name: OTEL_EXPORTER_OTLP_TRACES_ENDPOINT
+              value: http://127.0.0.1:19401/v1/traces
+            - name: OTEL_EXPORTER_OTLP_TRACES_PROTOCOL
+              value: http/protobuf
+            {{- end }}
+          resources:
+            {{- toYaml .Values.daemonset.obi.resources | nindent 12 }}
+          securityContext:
+            runAsUser: 0
+            capabilities:
+              drop: ["ALL"]
+              add:
+                {{- toYaml .Values.daemonset.obi.capabilities | nindent 16 }}
+        {{- end }}
       volumes:
         # DaemonSet pods are ephemeral — emptyDir for the data dir is
         # fine. The instance.id file regenerates on each pod start,

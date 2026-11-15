@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
+	"strings"
 
 	"github.com/statusharbor/lighthouse/internal/transport"
 )
@@ -157,13 +158,52 @@ func pgParams(ctx context.Context, db *sql.DB) (*transport.DBParams, error) {
 	return marshalParams(values)
 }
 
+// plannable reports whether pg_stat_statements text is a planned
+// statement, whose constants PostgreSQL replaces with $n placeholders.
+// Utility statements (ALTER ROLE ... PASSWORD '...', COPY, SET) can keep
+// their literals before PostgreSQL 16, so they are never sent
+// (docs/eBPF/09-security-page.md in status-harbor, prerequisite 4).
+//
+// ponytail: dropped on every version; utility statements are rarely what
+// a slow-query session is after.
+func plannable(query string) bool {
+	q := strings.TrimSpace(query)
+	for {
+		switch {
+		case strings.HasPrefix(q, "/*"):
+			end := strings.Index(q, "*/")
+			if end < 0 {
+				return false
+			}
+			q = strings.TrimSpace(q[end+2:])
+		case strings.HasPrefix(q, "--"):
+			end := strings.IndexByte(q, '\n')
+			if end < 0 {
+				return false
+			}
+			q = strings.TrimSpace(q[end+1:])
+		case strings.HasPrefix(q, "("):
+			q = strings.TrimSpace(q[1:])
+		default:
+			word, _, _ := strings.Cut(q, " ")
+			word, _, _ = strings.Cut(word, "\n")
+			switch strings.ToUpper(strings.TrimRight(word, "(")) {
+			case "SELECT", "INSERT", "UPDATE", "DELETE", "WITH", "MERGE", "VALUES", "TABLE":
+				return true
+			}
+			return false
+		}
+	}
+}
+
 func pgSlow(ctx context.Context, db *sql.DB, topN int) ([]byte, error) {
+	// Read twice as many so dropping utility statements still leaves topN.
 	rows, err := db.QueryContext(ctx, `
 		SELECT query, calls, mean_exec_time, total_exec_time, rows, shared_blks_read
 		FROM pg_stat_statements
 		ORDER BY total_exec_time DESC
 		LIMIT $1
-	`, topN)
+	`, 2*topN)
 	if err != nil {
 		return nil, err
 	}
@@ -173,6 +213,9 @@ func pgSlow(ctx context.Context, db *sql.DB, topN int) ([]byte, error) {
 		var q slowQuery
 		if err := rows.Scan(&q.Query, &q.Calls, &q.MeanMs, &q.TotalMs, &q.Rows, &q.SharedBlksRead); err != nil {
 			return nil, err
+		}
+		if !plannable(q.Query) || len(out) == topN {
+			continue
 		}
 		out = append(out, q)
 	}

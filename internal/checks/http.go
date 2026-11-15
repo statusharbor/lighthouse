@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/http/httptrace"
 	"strings"
 	"time"
 )
@@ -68,6 +69,10 @@ type HTTPParams struct {
 	// matching. Defaults to 1 MB so a runaway response can't OOM the
 	// agent.
 	ReadBodyLimit int64
+
+	// Trace, when set, records the run's phases and (SendHeader) sends
+	// its traceparent.
+	Trace *Trace
 }
 
 const defaultReadBodyLimit = 1 << 20 // 1 MB
@@ -110,9 +115,21 @@ func (HTTPCheck) Run(ctx context.Context, p HTTPParams) Result {
 		}
 		req.Header.Add(h.Key, h.Value)
 	}
+	var clock phaseClock
+	if p.Trace != nil {
+		req = req.WithContext(httptrace.WithClientTrace(req.Context(), clock.clientTrace()))
+		if p.Trace.SendHeader {
+			req.Header.Set("traceparent", p.Trace.Traceparent())
+		}
+	}
 
 	start := time.Now()
 	resp, err := client.Do(req)
+	if p.Trace != nil {
+		// Phases end when the body is closed (every return path below
+		// reads or drains it first).
+		defer func() { clock.record(p.Trace, start, time.Now()) }()
+	}
 	if err != nil {
 		return Result{
 			Up:             false,

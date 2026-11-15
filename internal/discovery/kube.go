@@ -232,9 +232,11 @@ type serviceJSON struct {
 		Name      string `json:"name"`
 	} `json:"metadata"`
 	Spec struct {
-		Type      string `json:"type"`
-		ClusterIP string `json:"clusterIP"`
-		Ports     []struct {
+		Type       string            `json:"type"`
+		ClusterIP  string            `json:"clusterIP"`
+		ClusterIPs []string          `json:"clusterIPs"`
+		Selector   map[string]string `json:"selector"`
+		Ports      []struct {
 			Name     string `json:"name"`
 			Port     int    `json:"port"`
 			Protocol string `json:"protocol"`

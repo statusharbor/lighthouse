@@ -8,6 +8,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/statusharbor/lighthouse/internal/traces"
 	"github.com/statusharbor/lighthouse/internal/transport"
 )
 
@@ -53,6 +54,21 @@ type Runner struct {
 	// Console treats empty as "no pod-vs-node distinction" and
 	// falls back to displaying nodeName only.
 	podHostname string
+
+	// hostFacts is the fleet-survey report, collected once at startup and
+	// sent on heartbeats until one succeeds (hostFactsAcked). Nil off Linux.
+	hostFacts      *transport.HostFacts
+	hostFactsAcked atomic.Bool
+
+	// ebpf is the eBPF manager (nil when this agent runs none); ebpfAcked
+	// is the status report the last successful heartbeat carried. Both
+	// are touched only from the heartbeat goroutine.
+	ebpf      ebpfController
+	ebpfAcked []transport.EBPFStatus
+	// tracesGate follows the Console's traces gate; nil when unused.
+	tracesGate func(*transport.TracesGate)
+	// tracesPipeline adds the "traces" status line; nil when unused.
+	tracesPipeline *traces.Pipeline
 
 	// State tracked across the run — committed state per check_id used for
 	// transition detection. mu guards state + etag; the rollups self-lock
@@ -187,6 +203,7 @@ func NewRunner(cfg *Config, client *transport.Client, executor CheckExecutor, no
 		executor:    executor,
 		nodeName:    nodeName,
 		podHostname: podHostname,
+		hostFacts:   collectHostFacts(),
 		state:       map[string]State{},
 		latency:     newRollup[transport.LatencyEntry](),
 		certExpiry:  newRollup[transport.CertExpiryEntry](),
@@ -529,6 +546,12 @@ func (r *Runner) SendHeartbeat(ctx context.Context) (*transport.HeartbeatRespons
 		role = RoleCentral
 	}
 
+	var facts *transport.HostFacts
+	if !r.hostFactsAcked.Load() {
+		facts = r.hostFacts
+	}
+	ebpfStatus := r.pendingEBPFStatus()
+
 	resp, err := r.client.Heartbeat(ctx, transport.HeartbeatRequest{
 		AgentVersion:   AgentVersion,
 		ConfigEtag:     etag,
@@ -537,6 +560,8 @@ func (r *Runner) SendHeartbeat(ctx context.Context) (*transport.HeartbeatRespons
 		NodeName:       r.nodeName,
 		Role:           role,
 		PodHostname:    r.podHostname,
+		HostFacts:      facts,
+		EBPFStatus:     ebpfStatus,
 		// Channel-health signals (design #12). RTT + skew describe the
 		// PREVIOUS beat (the client records them after each round-trip, so
 		// the values read here are from the beat before this one);
@@ -557,6 +582,12 @@ func (r *Runner) SendHeartbeat(ctx context.Context) (*transport.HeartbeatRespons
 				"threshold", degradedThreshold)
 		}
 		return nil, err
+	}
+	if facts != nil {
+		r.hostFactsAcked.Store(true)
+	}
+	if ebpfStatus != nil {
+		r.ebpfAcked = ebpfStatus
 	}
 
 	// Recovery path: reset the counter + drain. A clean transition
@@ -811,6 +842,7 @@ func CheckDefsFromTransport(in []transport.CheckDef) []CheckDefinition {
 			KeywordPresent:     c.KeywordPresent,
 			RequestBody:        c.RequestBody,
 			SkipTLSVerify:      c.SkipTLSVerify,
+			TraceHeader:        c.TraceHeader,
 			DNSRecordType:      c.DNSRecordType,
 			DNSExpectedIPs:     c.DNSExpectedIPs,
 			DNSResolver:        c.DNSResolver,
