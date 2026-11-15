@@ -61,7 +61,8 @@ jobs:
           sudo udevadm control --reload-rules
           sudo udevadm trigger --name-match=kvm
       - name: Install vimto
-        run: go install lmb.io/vimto@latest
+        # vimto refuses to exec unless it was itself built without cgo.
+        run: CGO_ENABLED=0 go install lmb.io/vimto@latest
       - name: Real-kernel tests
         env:
           GOWORK: "off"
@@ -90,7 +91,8 @@ jobs:
           sudo udevadm control --reload-rules
           sudo udevadm trigger --name-match=kvm
       - name: Install vimto
-        run: go install lmb.io/vimto@latest
+        # vimto refuses to exec unless it was itself built without cgo.
+        run: CGO_ENABLED=0 go install lmb.io/vimto@latest
       - name: Benchmark
         env:
           GOWORK: "off"
