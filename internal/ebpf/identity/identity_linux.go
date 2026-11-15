@@ -106,7 +106,7 @@ func (c *Collector) Run(ctx context.Context, sink ebpf.Sink) error {
 		select {
 		case <-ctx.Done():
 			_ = rd.Close() // unblocks read
-			<-readErr
+			_ = <-readErr // the read loop's exit; we are stopping anyway
 			return nil
 		case err := <-readErr:
 			return err

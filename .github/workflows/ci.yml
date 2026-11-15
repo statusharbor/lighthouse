@@ -65,6 +65,8 @@ jobs:
       - name: Real-kernel tests
         env:
           GOWORK: "off"
+          # vimto runs the test binary inside the VM: it must be static.
+          CGO_ENABLED: "0"
         run: |
           vimto -kernel "ghcr.io/cilium/ci-kernels:${{ matrix.kernel }}" -- \
             go test -count=1 -run 'Kernel|TestIdentity_|TestDiscovery_|TestNetwork_|TestUsage_' ./internal/ebpf/...
@@ -92,6 +94,7 @@ jobs:
       - name: Benchmark
         env:
           GOWORK: "off"
+          CGO_ENABLED: "0"
           OVERHEAD_BENCH: "1"
           OVERHEAD_SCALE: "0.1"
         run: |
