@@ -103,9 +103,9 @@ func (c *Collector) Run(ctx context.Context, sink ebpf.Sink) error {
 		select {
 		case <-ctx.Done():
 			_ = rd.Close()
-			_ = <-readErr // the read loop's exit; we are stopping anyway
+			err := <-readErr                            // nil once the closed ring buffer ends the read loop
 			emit(proc.flush(time.Now().Add(time.Hour))) // close open crash-loop windows
-			return nil
+			return err
 		case err := <-readErr:
 			return err
 		case r := <-raw:

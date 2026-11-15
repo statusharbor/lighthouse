@@ -31,7 +31,9 @@ func cpuTime() time.Duration {
 	var self, kids syscall.Rusage
 	_ = syscall.Getrusage(syscall.RUSAGE_SELF, &self)
 	_ = syscall.Getrusage(syscall.RUSAGE_CHILDREN, &kids)
-	tv := func(t syscall.Timeval) time.Duration { return time.Duration(t.Sec)*time.Second + time.Duration(t.Usec)*time.Microsecond }
+	tv := func(t syscall.Timeval) time.Duration {
+		return time.Duration(t.Sec)*time.Second + time.Duration(t.Usec)*time.Microsecond
+	}
 	return tv(self.Utime) + tv(self.Stime) + tv(kids.Utime) + tv(kids.Stime)
 }
 

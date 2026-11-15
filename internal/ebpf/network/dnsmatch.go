@@ -30,7 +30,7 @@ type dnsKey struct {
 type resolverStats struct {
 	queries    uint64
 	failures   map[string]uint64 // servfail, refused, timeout, other
-	latencySum float64          // this interval, ms
+	latencySum float64           // this interval, ms
 	latencyN   int
 }
 

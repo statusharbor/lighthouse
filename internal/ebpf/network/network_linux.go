@@ -37,7 +37,9 @@ type Collector struct {
 	Interval time.Duration
 	// Usage, when set, receives per-process TCP bytes (plan 05) grouped by
 	// GroupOf.
-	Usage   interface{ AddNetwork(group string, bytes uint64) }
+	Usage interface {
+		AddNetwork(group string, bytes uint64)
+	}
 	GroupOf func(ctx context.Context, k identity.Key, comm string) string
 
 	decodeErrors atomic.Uint64
