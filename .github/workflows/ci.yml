@@ -71,8 +71,10 @@ jobs:
           # vimto runs the test binary inside the VM: it must be static.
           CGO_ENABLED: "0"
         run: |
-          vimto -kernel "ghcr.io/cilium/ci-kernels:${{ matrix.kernel }}" -- \
-            go test -count=1 -run 'Kernel|TestIdentity_|TestDiscovery_|TestNetwork_|TestUsage_' ./internal/ebpf/...
+          # -sudo: the tests load BPF programs, so they run as root in the VM;
+          # -v shows skips, which would otherwise pass silently.
+          vimto -kernel "ghcr.io/cilium/ci-kernels:${{ matrix.kernel }}" -sudo -- \
+            go test -count=1 -v -run 'Kernel|TestIdentity_|TestDiscovery_|TestNetwork_|TestUsage_' ./internal/ebpf/...
 
   # Overhead benchmark (docs/eBPF/01-foundation.md, acceptance criterion
   # 10): a tenth of the reference load with the collectors off and on, on
@@ -104,7 +106,7 @@ jobs:
           OVERHEAD_BENCH: "1"
           OVERHEAD_SCALE: "0.1"
         run: |
-          vimto -kernel "ghcr.io/cilium/ci-kernels:stable" -- \
+          vimto -kernel "ghcr.io/cilium/ci-kernels:stable" -sudo -- \
             go test -count=1 -v -run TestOverhead ./internal/ebpf/overhead/ | tee overhead.txt
           grep "of one core" overhead.txt >> "$GITHUB_STEP_SUMMARY"
 
