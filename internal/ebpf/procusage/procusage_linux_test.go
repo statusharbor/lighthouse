@@ -11,7 +11,10 @@ import (
 	"testing"
 	"time"
 
+	"golang.org/x/sys/unix"
+
 	"github.com/statusharbor/lighthouse/internal/ebpf"
+	_ "github.com/statusharbor/lighthouse/internal/ebpf/ebpftest"
 	"github.com/statusharbor/lighthouse/internal/ebpf/identity"
 	"github.com/statusharbor/lighthouse/internal/usage"
 )
@@ -69,7 +72,17 @@ func TestUsage_Kernel(t *testing.T) {
 	}
 	_ = f.Close()
 	defer func() { _ = os.Remove(f.Name()) }()
-	if out, err := exec.Command("dd", "if=/dev/zero", "of="+f.Name(), "bs=1M", "count=5", "oflag=direct").CombinedOutput(); err != nil {
+	// Disk latency needs I/O that reaches a block device. A temp dir on a
+	// virtual filesystem (a VM's shared root, tmpfs) has none and may
+	// refuse O_DIRECT, so there only CPU and file I/O are checked.
+	var fs unix.Statfs_t
+	onDisk := unix.Statfs(f.Name(), &fs) == nil &&
+		fs.Type != unix.TMPFS_MAGIC && fs.Type != unix.V9FS_MAGIC && fs.Type != unix.FUSE_SUPER_MAGIC
+	args := []string{"if=/dev/zero", "of=" + f.Name(), "bs=1M", "count=5"}
+	if onDisk {
+		args = append(args, "oflag=direct")
+	}
+	if out, err := exec.Command("dd", args...).CombinedOutput(); err != nil {
 		t.Fatalf("dd: %v %s", err, out)
 	}
 	time.Sleep(600 * time.Millisecond) // a few collector intervals
@@ -101,7 +114,10 @@ func TestUsage_Kernel(t *testing.T) {
 			found = true
 		}
 	}
-	if !found {
+	switch {
+	case !onDisk:
+		t.Logf("temp dir is not on a block device: disk latency not checked")
+	case !found:
 		t.Errorf("no disk latency: %v", sink.gauges)
 	}
 }

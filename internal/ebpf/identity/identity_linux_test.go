@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/statusharbor/lighthouse/internal/ebpf"
+	_ "github.com/statusharbor/lighthouse/internal/ebpf/ebpftest"
 )
 
 type nopSink struct{}

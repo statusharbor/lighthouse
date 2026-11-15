@@ -15,6 +15,7 @@ import (
 
 	"github.com/statusharbor/lighthouse/internal/ebpf"
 	"github.com/statusharbor/lighthouse/internal/ebpf/discovery"
+	_ "github.com/statusharbor/lighthouse/internal/ebpf/ebpftest"
 	"github.com/statusharbor/lighthouse/internal/ebpf/identity"
 	"github.com/statusharbor/lighthouse/internal/ebpf/incident"
 	"github.com/statusharbor/lighthouse/internal/ebpf/network"

@@ -16,6 +16,7 @@ import (
 	"time"
 
 	"github.com/statusharbor/lighthouse/internal/ebpf"
+	_ "github.com/statusharbor/lighthouse/internal/ebpf/ebpftest"
 	"github.com/statusharbor/lighthouse/internal/ebpf/identity"
 )
 

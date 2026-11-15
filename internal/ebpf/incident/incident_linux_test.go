@@ -4,6 +4,7 @@ package incident
 
 import (
 	"context"
+	"errors"
 	"net"
 	"os"
 	"os/exec"
@@ -13,6 +14,7 @@ import (
 	"time"
 
 	"github.com/statusharbor/lighthouse/internal/ebpf"
+	_ "github.com/statusharbor/lighthouse/internal/ebpf/ebpftest"
 )
 
 type recSink struct {
@@ -204,12 +206,16 @@ func TestIncident_KernelTCP(t *testing.T) {
 		_ = conn.(*net.TCPConn).SetLinger(0) // close with RST
 		_ = conn.Close()
 	}()
+	// On a fast loopback the server's reset can arrive before Dial
+	// returns; that is the received reset this checks, so it is fine.
 	conn, err := net.Dial("tcp4", ln.Addr().String())
-	if err != nil {
+	switch {
+	case err == nil:
+		_, _ = conn.Read(make([]byte, 1))
+		_ = conn.Close()
+	case !errors.Is(err, syscall.ECONNRESET):
 		t.Fatal(err)
 	}
-	_, _ = conn.Read(make([]byte, 1))
-	_ = conn.Close()
 	waitGauge(t, sink, gaugeKey("lighthouse_ebpf_tcp_resets_received_total",
 		map[string]string{"direction": "out", "peer": "127.0.0.1", "port": itoa(uint16(ln.Addr().(*net.TCPAddr).Port))}), 2*time.Second)
 
