@@ -1,4 +1,4 @@
-//go:build linux
+//go:build linux && (386 || amd64 || arm64)
 
 package requests
 
@@ -121,7 +121,8 @@ const (
 
 func onBPFFS(path string) bool {
 	var st unix.Statfs_t
-	return unix.Statfs(path, &st) == nil && st.Type == unix.BPF_FS_MAGIC
+	// Type is int32 on 32-bit platforms, where the magic overflows it.
+	return unix.Statfs(path, &st) == nil && uint32(st.Type) == unix.BPF_FS_MAGIC
 }
 
 // sweepPins removes pin directories of agents that are gone (a crash or

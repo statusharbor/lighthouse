@@ -1,4 +1,4 @@
-//go:build linux
+//go:build linux && (386 || amd64 || arm64)
 
 // Package hello is the foundation's empty collector: it counts process
 // starts with one tracepoint so loading, status reporting and transport
