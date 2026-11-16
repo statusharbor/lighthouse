@@ -95,26 +95,28 @@ checksum:
   name_template: "checksums.txt"
   algorithm: sha256
 
-# SBOM in SPDX JSON, one per published binary. Scoped to the `lighthouse`
-# build so we get one SBOM per OS/arch (unique filenames). The
-# `lighthouse-pkg` binaries are the same source and would produce
-# identical SBOMs with colliding names.
+# SBOM in SPDX JSON, one per published binary. The published binaries
+# are the `raw` archive's uploads (format binary), and those carry the
+# archive id, not the build id: filtering on `lighthouse` matched
+# nothing and v1.20.1 shipped without SBOMs or signatures. The
+# `lighthouse-pkg` binaries (packages only) are never uploaded, so their
+# identical SBOMs cannot collide here.
 sboms:
   - id: lighthouse-sbom
     artifacts: binary
-    ids: [lighthouse]
+    ids: [raw]
     documents:
       - "{{ .ArtifactName }}.spdx.json"
     cmd: syft
     args: ["$artifact", "--output", "spdx-json=$document"]
 
 # Cosign keyless signing (Sigstore). The keyless flow uses the GitHub
-# Actions OIDC token; no private key is stored anywhere. Scoped to
-# `lighthouse` for the same reason as sboms.
+# Actions OIDC token; no private key is stored anywhere. Scoped to the
+# `raw` archive's uploads for the same reason as sboms.
 signs:
   - id: cosign-binary
     artifacts: binary
-    ids: [lighthouse]
+    ids: [raw]
     cmd: cosign
     args:
       - sign-blob
