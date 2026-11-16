@@ -1,4 +1,6 @@
-{{- if and .Values.daemonset.enabled .Values.daemonset.ebpf.enabled }}
+{{- /* An empty-map default for releases upgraded with --reuse-values from
+a chart without daemonset.ebpf (see daemonset.yaml). */}}
+{{- if and .Values.daemonset.enabled (.Values.daemonset.ebpf | default dict).enabled }}
 # RBAC for the node pods' eBPF identity cache: list the pods scheduled on
 # the node (field selector spec.nodeName) so a process resolves to its pod
 # name and namespace. Read-only, pods only.

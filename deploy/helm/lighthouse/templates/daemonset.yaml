@@ -1,4 +1,11 @@
 {{- if .Values.daemonset.enabled }}
+{{- /* daemonset.ebpf and daemonset.obi arrived in chart 1.20. An upgrade
+with --reuse-values keeps the values of the chart it was installed
+from, where they do not exist: read them through empty-map defaults so
+such upgrades render, with eBPF and OBI off (no new privileges until
+they are turned on, e.g. with --reset-then-reuse-values). */}}
+{{- $ebpf := .Values.daemonset.ebpf | default dict }}
+{{- $obi := .Values.daemonset.obi | default dict }}
 # Per-node host-metrics workload (Phase 2.1).
 #
 # Runs the same agent image as the central StatefulSet but with
@@ -63,7 +70,7 @@ spec:
       # hostPID off here without a values-knob would be a breaking
       # change later.
       # eBPF needs the host PID namespace: the kernel reports host pids.
-      hostPID: {{ or .Values.daemonset.hostPID .Values.daemonset.ebpf.enabled }}
+      hostPID: {{ or .Values.daemonset.hostPID $ebpf.enabled | default false }}
       {{- with .Values.daemonset.podSecurityContext | default .Values.podSecurityContext }}
       securityContext:
         {{- toYaml . | nindent 8 }}
@@ -104,11 +111,11 @@ spec:
               valueFrom:
                 fieldRef:
                   fieldPath: status.hostIP
-            {{- if and .Values.daemonset.ebpf.enabled .Values.daemonset.obi.enabled }}
+            {{- if and $ebpf.enabled $obi.enabled }}
             - name: LIGHTHOUSE_OBI_METRICS_URL
-              value: "http://127.0.0.1:{{ .Values.daemonset.obi.port }}/metrics"
+              value: "http://127.0.0.1:{{ $obi.port }}/metrics"
             {{- end }}
-            {{- if not .Values.daemonset.ebpf.enabled }}
+            {{- if not $ebpf.enabled }}
             # Local eBPF kill switch: nothing is loaded, whatever the
             # Console's remote flags say.
             - name: LIGHTHOUSE_EBPF
@@ -158,29 +165,29 @@ spec:
           resources:
             {{- toYaml (.Values.daemonset.resources | default .Values.resources) | nindent 12 }}
           {{- $csc := deepCopy (.Values.daemonset.containerSecurityContext | default .Values.containerSecurityContext | default dict) }}
-          {{- if .Values.daemonset.ebpf.enabled }}
+          {{- if $ebpf.enabled }}
           {{- $caps := deepCopy (get $csc "capabilities" | default dict) }}
-          {{- $_ := set $caps "add" .Values.daemonset.ebpf.capabilities }}
+          {{- $_ := set $caps "add" $ebpf.capabilities }}
           {{- $_ := set $csc "capabilities" $caps }}
           {{- end }}
           {{- with $csc }}
           securityContext:
             {{- toYaml . | nindent 12 }}
           {{- end }}
-        {{- if and .Values.daemonset.ebpf.enabled .Values.daemonset.obi.enabled }}
+        {{- if and $ebpf.enabled $obi.enabled }}
         # Passive request metrics (docs/eBPF/06): OpenTelemetry eBPF
         # Instrumentation as its own container with its own privileges, so
         # a crash or CPU spike stays out of the agent. It shares the pod's
         # network namespace; the agent reads its Prometheus endpoint on
         # loopback (LIGHTHOUSE_OBI_METRICS_URL above).
         - name: obi
-          image: "{{ .Values.daemonset.obi.image.repository }}:{{ .Values.daemonset.obi.image.tag }}"
+          image: "{{ $obi.image.repository }}:{{ $obi.image.tag }}"
           imagePullPolicy: {{ .Values.image.pullPolicy }}
           env:
             - name: OTEL_EBPF_PROMETHEUS_PORT
-              value: {{ .Values.daemonset.obi.port | quote }}
+              value: {{ $obi.port | quote }}
             - name: OTEL_EBPF_OPEN_PORT
-              value: {{ .Values.daemonset.obi.openPorts | quote }}
+              value: {{ $obi.openPorts | quote }}
             - name: OTEL_EBPF_LOG_LEVEL
               value: WARN
             # The agent maps OBI's instance label (host:pid) to pods
@@ -193,7 +200,7 @@ spec:
             # TC programs off Cilium clusters.
             - name: OTEL_EBPF_BPF_CONTEXT_PROPAGATION
               value: disabled
-            {{- if .Values.daemonset.obi.traces }}
+            {{- if $obi.traces }}
             # Spans go to the agent's receiver on the pod's loopback, which
             # filters and samples them and drops them while Traces is off
             # in the Console.
@@ -203,13 +210,13 @@ spec:
               value: http/protobuf
             {{- end }}
           resources:
-            {{- toYaml .Values.daemonset.obi.resources | nindent 12 }}
+            {{- toYaml $obi.resources | nindent 12 }}
           securityContext:
             runAsUser: 0
             capabilities:
               drop: ["ALL"]
               add:
-                {{- toYaml .Values.daemonset.obi.capabilities | nindent 16 }}
+                {{- toYaml $obi.capabilities | nindent 16 }}
         {{- end }}
       volumes:
         # DaemonSet pods are ephemeral — emptyDir for the data dir is
