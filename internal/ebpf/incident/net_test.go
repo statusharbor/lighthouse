@@ -36,19 +36,39 @@ func TestSeriesFor(t *testing.T) {
 			series{metric: "lighthouse_ebpf_tcp_connect_failures_total", peer: "10.0.0.5", port: "80", direction: "out", reason: "timed_out"}},
 	}
 	for _, tc := range cases {
-		got, ok := seriesFor(tc.k)
+		got, ok := seriesFor(tc.k, nil)
 		if !ok || got != tc.want {
 			t.Errorf("%s: got %+v,%v want %+v", tc.name, got, ok, tc.want)
 		}
 	}
-	if _, ok := seriesFor(connKey{Kind: 9}); ok {
+	if _, ok := seriesFor(connKey{Kind: 9}, nil); ok {
 		t.Error("unknown kind must be skipped")
+	}
+}
+
+// A client port outside the ephemeral range (NAT, another OS) on a
+// socket whose local port is a listener is inbound, not a new series.
+func TestSeriesFor_Listening(t *testing.T) {
+	listening := func(p uint16) bool { return p == 8443 }
+	k := connKey{Addr: v4(10, 42, 1, 2), RPort: 13344, LPort: 8443, Kind: connResetReceived}
+	want := series{metric: "lighthouse_ebpf_tcp_resets_received_total", port: "8443", direction: "in"}
+	if got, _ := seriesFor(k, listening); got != want {
+		t.Errorf("got %+v want %+v", got, want)
+	}
+	// Without the listener set the port rule still decides.
+	if got, _ := seriesFor(k, nil); got.direction != "out" || got.port != "13344" {
+		t.Errorf("fallback: got %+v", got)
+	}
+	// Outbound to a port both hosts listen on stays outbound.
+	out := connKey{Addr: v4(10, 0, 0, 5), RPort: 8443, LPort: 41000, Kind: connResetReceived}
+	if got, _ := seriesFor(out, listening); got.direction != "out" || got.port != "8443" {
+		t.Errorf("outbound: got %+v", got)
 	}
 }
 
 func TestNetTotals(t *testing.T) {
 	now := time.Date(2026, 11, 15, 12, 0, 0, 0, time.UTC)
-	tot := newNetTotals()
+	tot := newNetTotals(nil)
 	tot.maxSeries = 2
 	refused := connKey{Addr: v4(10, 0, 0, 5), RPort: 5432, LPort: 41000, Kind: connConnectFailed, Err: 111}
 	tot.add(refused, 3, now)

@@ -68,8 +68,10 @@ func NewEBPF(ctx context.Context, cfg *Config, kubernetes bool, send func(contex
 	})
 	netC := network.New(ident, cfg.Agent.ProcRoot)
 	netC.Usage, netC.GroupOf = acct, poller.GroupOf
+	disc, inc := discovery.New(ident, cfg.Agent.ProcRoot), incident.New(ident.Cache)
+	inc.Listening = disc.Listening
 	m := ebpf.NewManager(ctx, []ebpf.Collector{
-		hello.New(), ident, incident.New(ident.Cache), discovery.New(ident, cfg.Agent.ProcRoot),
+		hello.New(), ident, inc, disc,
 		netC, procusage.New(ident, acct, poller),
 		requestsCollector(ident, cfg, checks, tracesPipeline),
 	}, host, killed, sink.forCollector)

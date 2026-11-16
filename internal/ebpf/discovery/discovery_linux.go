@@ -32,6 +32,18 @@ type Collector struct {
 	Interval time.Duration
 
 	decodeErrors atomic.Uint64
+	ports        atomic.Pointer[map[uint16]struct{}]
+}
+
+// Listening reports whether a listener anywhere on the host held port at
+// the last tick; false before the first one.
+func (c *Collector) Listening(port uint16) bool {
+	m := c.ports.Load()
+	if m == nil {
+		return false
+	}
+	_, ok := (*m)[port]
+	return ok
 }
 
 func New(ident *identity.Collector, procRoot string) *Collector {
@@ -113,6 +125,8 @@ func (c *Collector) Run(ctx context.Context, sink ebpf.Sink) error {
 			for _, e := range inv.tick(now) {
 				sink.Event(e.kind, now, e.payload)
 			}
+			ports := inv.ports()
+			c.ports.Store(&ports)
 			if err := c.drainEdges(ctx, objs.Edges, edges, &public, self, now); err != nil {
 				return fmt.Errorf("read edges: %w", err)
 			}

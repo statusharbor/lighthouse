@@ -27,7 +27,10 @@ import (
 type Collector struct {
 	Identity   *identity.Cache
 	IsListener func(identity.Key) bool
-	Interval   time.Duration
+	// Listening reports a port some listener on the host holds, so TCP
+	// counters tell server sockets from client ones (discovery's set).
+	Listening func(port uint16) bool
+	Interval  time.Duration
 
 	decodeErrors atomic.Uint64
 }
@@ -87,7 +90,7 @@ func (c *Collector) Run(ctx context.Context, sink ebpf.Sink) error {
 	}
 
 	proc := newProcessor(c.Identity, c.IsListener)
-	conns, drainOK := newNetTotals(), true
+	conns, drainOK := newNetTotals(c.Listening), true
 	raw := make(chan rawEvent, 256)
 	readErr := make(chan error, 1)
 	go func() { readErr <- c.read(ctx, rd, raw) }()
@@ -127,7 +130,7 @@ func (c *Collector) Run(ctx context.Context, sink ebpf.Sink) error {
 					slog.Warn("ebpf incident: TCP counters unavailable", "error", err)
 				}
 				if ebpf.Limited("incident") {
-					conns = newNetTotals() // the plan has the top line only: counters are not sent
+					conns = newNetTotals(c.Listening) // the plan has the top line only: counters are not sent
 				} else {
 					conns.emit(now, sink.Gauge)
 				}
