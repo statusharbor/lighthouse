@@ -164,6 +164,17 @@ func (inv *inventory) tick(now time.Time) []emission {
 	return out
 }
 
+// ports is every port with an open listening socket, in any namespace.
+func (inv *inventory) ports() map[uint16]struct{} {
+	out := make(map[uint16]struct{}, len(inv.entries))
+	for k, e := range inv.entries {
+		if len(e.sockets) > 0 {
+			out[k.Port] = struct{}{}
+		}
+	}
+	return out
+}
+
 func (inv *inventory) announced() int {
 	n := 0
 	for _, e := range inv.entries {

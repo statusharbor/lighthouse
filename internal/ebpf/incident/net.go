@@ -69,11 +69,23 @@ func (s series) labels() map[string]string {
 	return l
 }
 
+// inbound tells a server-side socket: its local port is one the host
+// listens on and the peer's is not, or, without that set (discovery off or
+// not ticked yet), the peer's port is ephemeral and the local one is not.
+// The port range alone misleads behind NAT: Cloudflare's client ports
+// reach Traefik through klipper-lb from anywhere in 1024-65535, and each
+// one became an outbound series.
+func inbound(k connKey, listening func(uint16) bool) bool {
+	if listening != nil && listening(k.LPort) && !listening(k.RPort) {
+		return true
+	}
+	return ephemeral(k.RPort) && !ephemeral(k.LPort)
+}
+
 // seriesFor folds a socket into a low-cardinality series. Outbound
-// sockets keep the peer address and port. Inbound ones (a server port
-// talking to a client's ephemeral port) keep only the local port, since
-// their peers are arbitrary clients.
-func seriesFor(k connKey) (series, bool) {
+// sockets keep the peer address and port. Inbound ones keep only the
+// local port, since their peers are arbitrary clients.
+func seriesFor(k connKey, listening func(uint16) bool) (series, bool) {
 	metric, ok := connMetric[k.Kind]
 	if !ok {
 		return series{}, false
@@ -82,7 +94,7 @@ func seriesFor(k connKey) (series, bool) {
 	if k.Kind == connConnectFailed {
 		s.reason = ConnectReason(k.Err)
 	}
-	if k.Kind != connConnectFailed && ephemeral(k.RPort) && !ephemeral(k.LPort) {
+	if k.Kind != connConnectFailed && inbound(k, listening) {
 		s.direction, s.port = "in", itoa(k.LPort)
 		return s, true
 	}
@@ -102,6 +114,7 @@ func itoa(p uint16) string { return strconv.Itoa(int(p)) }
 // refused and counted.
 type netTotals struct {
 	maxSeries int // 0: four series (one per counter) per destination of the quota
+	listening func(port uint16) bool
 	public    ebpf.PublicLimiter
 	idle      time.Duration
 	totals    map[series]*total
@@ -113,12 +126,12 @@ type total struct {
 	seen time.Time
 }
 
-func newNetTotals() *netTotals {
-	return &netTotals{idle: time.Hour, totals: map[series]*total{}}
+func newNetTotals(listening func(uint16) bool) *netTotals {
+	return &netTotals{idle: time.Hour, totals: map[series]*total{}, listening: listening}
 }
 
 func (t *netTotals) add(k connKey, n uint64, now time.Time) {
-	s, ok := seriesFor(k)
+	s, ok := seriesFor(k, t.listening)
 	if !ok {
 		return
 	}

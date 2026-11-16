@@ -123,3 +123,15 @@ func TestInventory_CapAndResync(t *testing.T) {
 		t.Fatalf("announced() = %d", inv.announced())
 	}
 }
+
+// ports lists every port with an open socket, across namespaces.
+func TestInventory_Ports(t *testing.T) {
+	inv := newInventory(t0)
+	inv.open(10, listenerKey{NetNS: 1, Addr: "*", Port: 5432}, pg(100))
+	inv.open(11, listenerKey{NetNS: 2, Addr: "*", Port: 8443}, pg(101))
+	inv.close(11)
+	got := inv.ports()
+	if _, ok := got[5432]; !ok || len(got) != 1 {
+		t.Errorf("ports = %v, want only 5432", got)
+	}
+}
