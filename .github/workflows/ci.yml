@@ -5,6 +5,15 @@ on:
     branches: [master]
   pull_request:
     branches: [master]
+  # Republish an existing tag whose release run failed or was cancelled
+  # after semantic-release had already tagged it (gh workflow run ci.yml
+  # -f tag=v1.20.1). A rerun cannot: it checks out the commit before the
+  # release commit, so it finds no tag and skips goreleaser.
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Existing tag to publish (e.g. v1.20.1)
+        required: true
 
 permissions:
   contents: read
@@ -261,7 +270,7 @@ jobs:
     name: Release
     runs-on: ubuntu-latest
     needs: [build, test, lint, helm-lint]
-    if: github.ref == 'refs/heads/master' && github.event_name == 'push' && !startsWith(github.event.head_commit.message, 'chore(release):')
+    if: github.ref == 'refs/heads/master' && ((github.event_name == 'push' && !startsWith(github.event.head_commit.message, 'chore(release):')) || github.event_name == 'workflow_dispatch')
     permissions:
       contents: write     # push tag, create GitHub release
       issues: write
@@ -273,6 +282,7 @@ jobs:
         with:
           fetch-depth: 0
           token: ${{ secrets.GITHUB_TOKEN }}
+          ref: ${{ inputs.tag }} # empty on push: the pushed commit
 
       - uses: actions/setup-node@v5
         with:
@@ -370,8 +380,12 @@ jobs:
         id: semrel
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REPUBLISH_TAG: ${{ inputs.tag }}
         run: |
-          npx semantic-release
+          # A dispatched run publishes the checked-out tag as it is.
+          if [ -z "$REPUBLISH_TAG" ]; then
+            npx semantic-release
+          fi
           # Remove untracked config so goreleaser sees a clean tree.
           rm -f .releaserc.json
           if tag=$(git describe --tags --exact-match HEAD 2>/dev/null); then
