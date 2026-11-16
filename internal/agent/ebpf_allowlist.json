@@ -1,0 +1,213 @@
+{
+  "_comment": "Everything the Lighthouse eBPF collectors may send (status-harbor docs/eBPF/09-security-page.md, data tables). The agent drops any series name, label or event field not listed here; the security page's tables are generated from this file.",
+  "events": {
+    "crash_loop": [
+      "comm",
+      "exe",
+      "container_id",
+      "pod",
+      "namespace",
+      "last_class",
+      "count",
+      "window_start",
+      "window_end"
+    ],
+    "listener_close": [
+      "port",
+      "addr",
+      "netns",
+      "host_network",
+      "pid",
+      "comm",
+      "exe",
+      "container_id",
+      "pod",
+      "namespace",
+      "workload",
+      "unit",
+      "service",
+      "type",
+      "monitor",
+      "infra",
+      "bootstrap",
+      "resync"
+    ],
+    "listener_open": [
+      "port",
+      "addr",
+      "netns",
+      "host_network",
+      "pid",
+      "comm",
+      "exe",
+      "container_id",
+      "pod",
+      "namespace",
+      "workload",
+      "unit",
+      "service",
+      "type",
+      "monitor",
+      "infra",
+      "bootstrap",
+      "resync"
+    ],
+    "oom_kill": [
+      "pid",
+      "comm",
+      "exe",
+      "container_id",
+      "pod",
+      "namespace",
+      "scope",
+      "trigger_pid",
+      "trigger_comm"
+    ],
+    "process_exit": [
+      "pid",
+      "comm",
+      "exe",
+      "container_id",
+      "pod",
+      "namespace",
+      "class",
+      "signal",
+      "core_dumped",
+      "status",
+      "sender_pid",
+      "sender_comm"
+    ]
+  },
+  "series": {
+    "lighthouse_ebpf_discovery_decode_errors_total": [],
+    "lighthouse_ebpf_discovery_listeners": [],
+    "lighthouse_ebpf_discovery_lost_total": [],
+    "lighthouse_ebpf_discovery_overflow_total": [],
+    "lighthouse_ebpf_disk_latency_ms": [
+      "device",
+      "quantile"
+    ],
+    "lighthouse_ebpf_dns_failures_total": [
+      "resolver",
+      "reason"
+    ],
+    "lighthouse_ebpf_dns_latency_ms": [
+      "resolver"
+    ],
+    "lighthouse_ebpf_dns_queries_total": [
+      "resolver"
+    ],
+    "lighthouse_ebpf_events_dropped_total": [],
+    "lighthouse_ebpf_events_encode_errors_total": [],
+    "lighthouse_ebpf_events_quota_dropped_total": [],
+    "lighthouse_ebpf_flow_bytes_received_total": [
+      "src",
+      "dst",
+      "dst_port"
+    ],
+    "lighthouse_ebpf_flow_bytes_sent_total": [
+      "src",
+      "dst",
+      "dst_port"
+    ],
+    "lighthouse_ebpf_flow_connect_ms": [
+      "dst",
+      "dst_port",
+      "quantile"
+    ],
+    "lighthouse_ebpf_flow_connections_total": [
+      "src",
+      "dst",
+      "dst_port",
+      "infra",
+      "proxy"
+    ],
+    "lighthouse_ebpf_flow_edges_truncated_total": [],
+    "lighthouse_ebpf_flow_quality_truncated_total": [],
+    "lighthouse_ebpf_flow_retransmit_ratio": [
+      "src",
+      "dst",
+      "dst_port"
+    ],
+    "lighthouse_ebpf_flow_rtt_ms": [
+      "src",
+      "dst",
+      "dst_port"
+    ],
+    "lighthouse_ebpf_hello_execs_total": [],
+    "lighthouse_ebpf_identity_decode_errors_total": [],
+    "lighthouse_ebpf_identity_entries": [],
+    "lighthouse_ebpf_identity_lost_total": [],
+    "lighthouse_ebpf_identity_refused_total": [],
+    "lighthouse_ebpf_incident_decode_errors_total": [],
+    "lighthouse_ebpf_incident_lost_total": [],
+    "lighthouse_ebpf_incident_oom_attached": [],
+    "lighthouse_ebpf_network_decode_errors_total": [],
+    "lighthouse_ebpf_network_lost_total": [],
+    "lighthouse_ebpf_series_not_allowed_total": [],
+    "lighthouse_ebpf_series_quota_dropped_total": [],
+    "lighthouse_ebpf_tcp_connect_failures_total": [
+      "direction",
+      "peer",
+      "port",
+      "reason"
+    ],
+    "lighthouse_ebpf_tcp_resets_received_total": [
+      "direction",
+      "peer",
+      "port"
+    ],
+    "lighthouse_ebpf_tcp_resets_sent_total": [
+      "direction",
+      "peer",
+      "port"
+    ],
+    "lighthouse_ebpf_tcp_retransmits_total": [
+      "direction",
+      "peer",
+      "port"
+    ],
+    "lighthouse_ebpf_tcp_series_refused_total": [],
+    "lighthouse_l7_client_error_ratio": [
+      "kind",
+      "service",
+      "route"
+    ],
+    "lighthouse_l7_latency_ms": [
+      "kind",
+      "service",
+      "route",
+      "quantile"
+    ],
+    "lighthouse_l7_low_sample": [
+      "kind",
+      "service",
+      "route"
+    ],
+    "lighthouse_l7_requests_per_second": [
+      "kind",
+      "service",
+      "route"
+    ],
+    "lighthouse_l7_server_error_ratio": [
+      "kind",
+      "service",
+      "route"
+    ],
+    "lighthouse_top_cpu_cores": [
+      "group"
+    ],
+    "lighthouse_top_device_io_bytes_per_second": [
+      "group"
+    ],
+    "lighthouse_top_file_io_bytes_per_second": [
+      "group"
+    ],
+    "lighthouse_top_memory_bytes": [
+      "group"
+    ],
+    "lighthouse_top_network_bytes_per_second": [
+      "group"
+    ]
+  }
+}

@@ -13,6 +13,15 @@ agent:
   data_dir: /var/lib/lighthouse
   max_concurrent_checks: 10
   log_level: info        # info | debug
+  # eBPF collectors (Linux) start only when enabled for this Lighthouse in
+  # the Console. "off" is the local kill switch: nothing is loaded,
+  # whatever the Console says. Same as LIGHTHOUSE_EBPF=off.
+  # ebpf: off
+  # Passive request metrics: an OpenTelemetry eBPF Instrumentation binary
+  # for the agent to start and supervise (docs: README "eBPF collectors").
+  # obi:
+  #   path: /usr/local/bin/obi
+  #   ports: "80,443,8000-8999"
 
   # Database monitoring (docs/databases/plan.md in status-harbor) is
   # configured entirely in the Console UI - node DSNs are entered there,

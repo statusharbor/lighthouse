@@ -199,6 +199,16 @@ func (c *Client) SendEvents(ctx context.Context, req EventsRequest) (*EventsResp
 // echo a fresh check set (via Checks) when the etag changed. Per design
 // §4.2 there is **no retry** at this layer — a failed heartbeat is dropped
 // and the next 15s tick is the retry.
+// SendEBPFEvents posts one batch of eBPF collector events. No retry here:
+// the caller's batcher keeps the batch and retries on its next flush.
+func (c *Client) SendEBPFEvents(ctx context.Context, req EBPFEventsRequest) (*EBPFEventsResponse, error) {
+	var resp EBPFEventsResponse
+	if err := c.postJSON(ctx, "/api/lighthouse/v1/ebpf/events", req, &resp, http.StatusAccepted); err != nil {
+		return nil, err
+	}
+	return &resp, nil
+}
+
 func (c *Client) Heartbeat(ctx context.Context, req HeartbeatRequest) (*HeartbeatResponse, error) {
 	body, err := json.Marshal(req)
 	if err != nil {
@@ -267,6 +277,11 @@ func (c *Client) SendDiscoveries(ctx context.Context, req DiscoverySnapshotReque
 		return nil, err
 	}
 	return &out, nil
+}
+
+// SendK8sAddresses replaces the Lighthouse's cluster address map.
+func (c *Client) SendK8sAddresses(ctx context.Context, req K8sAddressesRequest) error {
+	return c.postJSON(ctx, "/api/lighthouse/v1/k8s-addresses", req, nil, http.StatusNoContent)
 }
 
 // Shutdown notifies the Console that the agent is exiting cleanly so the

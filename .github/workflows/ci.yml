@@ -39,6 +39,94 @@ jobs:
           GOARCH: ${{ matrix.arch }}
         run: go build -o /dev/null ./cmd/lighthouse
 
+  # eBPF on real kernels (docs/eBPF/01-foundation.md, "Kernel matrix in
+  # CI"): vimto boots each kernel from cilium's CI kernel images under KVM
+  # and runs the real-kernel tests inside it, as root with host PID.
+  kernel-matrix:
+    name: eBPF on kernel ${{ matrix.kernel }}
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        kernel: ["5.10", "5.15", "6.1", "6.6", "6.12", "stable"]
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-go@v6
+        with:
+          go-version: ${{ env.GO_VERSION }}
+          cache: true
+      - name: Enable KVM
+        run: |
+          echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' | sudo tee /etc/udev/rules.d/99-kvm4all.rules
+          sudo udevadm control --reload-rules
+          sudo udevadm trigger --name-match=kvm
+      - name: Install QEMU
+        run: sudo apt-get update -qq && sudo apt-get install -y -qq --no-install-recommends qemu-system-x86
+      - name: Install vimto
+        # vimto refuses to exec unless it was itself built without cgo.
+        run: CGO_ENABLED=0 go install lmb.io/vimto@latest
+      - name: Real-kernel tests
+        env:
+          GOWORK: "off"
+          # vimto runs the test binary inside the VM: it must be static.
+          CGO_ENABLED: "0"
+        run: |
+          # -sudo: the tests load BPF programs, so they run as root in the VM;
+          # -v shows skips, which would otherwise pass silently.
+          vimto -kernel "ghcr.io/cilium/ci-kernels:${{ matrix.kernel }}" -sudo -- \
+            go test -count=1 -v -run 'Kernel|TestIdentity_|TestDiscovery_|TestNetwork_|TestUsage_' ./internal/ebpf/...
+
+  # Overhead benchmark (docs/eBPF/01-foundation.md, acceptance criterion
+  # 10): a tenth of the reference load with the collectors off and on, on
+  # the newest kernel. Reports the CPU difference; never fails the build.
+  ebpf-overhead:
+    name: eBPF overhead benchmark
+    runs-on: ubuntu-latest
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-go@v6
+        with:
+          go-version: ${{ env.GO_VERSION }}
+          cache: true
+      - name: Enable KVM
+        run: |
+          echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' | sudo tee /etc/udev/rules.d/99-kvm4all.rules
+          sudo udevadm control --reload-rules
+          sudo udevadm trigger --name-match=kvm
+      - name: Install QEMU
+        run: sudo apt-get update -qq && sudo apt-get install -y -qq --no-install-recommends qemu-system-x86
+      - name: Install vimto
+        # vimto refuses to exec unless it was itself built without cgo.
+        run: CGO_ENABLED=0 go install lmb.io/vimto@latest
+      - name: Benchmark
+        env:
+          GOWORK: "off"
+          CGO_ENABLED: "0"
+          OVERHEAD_BENCH: "1"
+          OVERHEAD_SCALE: "0.1"
+        run: |
+          vimto -kernel "ghcr.io/cilium/ci-kernels:stable" -sudo -- \
+            go test -count=1 -v -run TestOverhead ./internal/ebpf/overhead/ | tee overhead.txt
+          grep "of one core" overhead.txt >> "$GITHUB_STEP_SUMMARY"
+
+  bpf-generate:
+    name: eBPF objects up to date
+    if: "!startsWith(github.event.head_commit.message, 'chore(release):')"
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v5
+
+      # Same pinned image as local regeneration, so output is byte-identical
+      # (docs/eBPF/01-foundation.md, acceptance criterion 1).
+      - run: ./bpf/generate.sh
+
+      - name: Fail on drift
+        run: |
+          git status --porcelain
+          test -z "$(git status --porcelain)"
+
   test:
     name: Test
     if: "!startsWith(github.event.head_commit.message, 'chore(release):')"
@@ -108,6 +196,35 @@ jobs:
           helm template lighthouse deploy/helm/lighthouse \
             --set existingSecret.name=lighthouse-token \
             --set existingSecret.key=token > /dev/null
+
+      - name: helm template - DaemonSet grants the eBPF privileges by default (the Console switches features)
+        run: |
+          out=$(helm template lighthouse deploy/helm/lighthouse \
+            --set token=lh_test --set daemonset.enabled=true)
+          echo "$out" | grep -q "hostPID: true"
+          echo "$out" | grep -q "name: lighthouse-ebpf"
+          echo "$out" | grep -q -- "- PERFMON"
+          ! echo "$out" | grep -q 'name: LIGHTHOUSE_EBPF'
+
+      - name: helm template - OBI sidecar has its own privileges and the agent reads it on loopback
+        run: |
+          out=$(helm template lighthouse deploy/helm/lighthouse \
+            --set token=lh_test \
+            --set daemonset.enabled=true --set daemonset.ebpf.enabled=true --set daemonset.obi.enabled=true)
+          echo "$out" | grep -q "name: obi"
+          echo "$out" | grep -q -- "- CHECKPOINT_RESTORE"
+          echo "$out" | grep -q "http://127.0.0.1:19400/metrics"
+          off=$(helm template lighthouse deploy/helm/lighthouse --set token=lh_test \
+            --set daemonset.enabled=true --set daemonset.ebpf.enabled=true)
+          ! echo "$off" | grep -q "name: obi"
+
+      - name: helm template - DaemonSet with eBPF turned off sets the kill switch
+        run: |
+          out=$(helm template lighthouse deploy/helm/lighthouse \
+            --set token=lh_test --set daemonset.enabled=true --set daemonset.ebpf.enabled=false)
+          echo "$out" | grep -q 'name: LIGHTHOUSE_EBPF'
+          ! echo "$out" | grep -q "lighthouse-ebpf"
+          ! echo "$out" | grep -q -- "- PERFMON"
 
       - name: replicaCount=2 must be rejected by validation guard
         run: |
@@ -272,6 +389,16 @@ jobs:
           args: release --clean
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      # The security page (status-harbor docs/eBPF/09-security-page.md)
+      # tells customers to verify signatures: a release without them must
+      # fail loudly, not ship with checksums only as v1.19.0 did.
+      - name: Verify signatures and SBOMs were produced
+        if: steps.semrel.outputs.released == 'true'
+        run: |
+          set -e
+          ls dist/*.sig dist/*.cert dist/*.spdx.json >/dev/null
+          echo "signed: $(ls dist/*.sig | wc -l) binaries, SBOMs: $(ls dist/*.spdx.json | wc -l)"
 
       - name: Push Helm chart to GHCR (OCI)
         if: steps.semrel.outputs.released == 'true'

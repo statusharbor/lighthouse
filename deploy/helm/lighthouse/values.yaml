@@ -219,8 +219,72 @@ daemonset:
   # container on a Linux node.
   mountHostRoot: true
   # When true, the pod shares the host's PID namespace. Off by
-  # default; the current /proc snapshot collector doesn't need it.
+  # default; the /proc snapshot collector doesn't need it. Forced on by
+  # ebpf.enabled below.
   hostPID: false
+  # eBPF collectors (kernel-level incident context, service discovery,
+  # network quality, per-process attribution). On with the DaemonSet:
+  # each node pod gets the capabilities below and hostPID, and loads
+  # nothing until a feature is switched on for this Lighthouse in the
+  # Console, which is where eBPF is turned on and off. Set to false to
+  # keep the capabilities off the nodes: the pods then run with
+  # LIGHTHOUSE_EBPF=off and ignore the Console. The central StatefulSet
+  # never loads eBPF programs either way.
+  #
+  # Requirements: Linux nodes with kernel 5.8+ and BTF
+  # (/sys/kernel/btf/vmlinux), a namespace at the `privileged` Pod
+  # Security level (Baseline forbids hostPID and added capabilities),
+  # and list permission on pods (granted by rbac-ebpf.yaml) so processes
+  # resolve to pod names. Not supported on GKE Autopilot or EKS Fargate.
+  #
+  # What it collects and how to switch it off: see the README section
+  # "eBPF collectors".
+  ebpf:
+    enabled: true
+    # BPF + PERFMON load and attach programs; SYS_PTRACE reads other
+    # processes' executable paths and open sockets; DAC_READ_SEARCH opens
+    # the /proc/<pid>/fd directories of processes run by other users
+    # (service discovery's startup snapshot); NET_ADMIN attaches the DNS
+    # program to the root cgroup (network quality); SYS_RESOURCE lifts the
+    # memlock limit on kernels before 5.11. Kernels before 5.8 have no
+    # BPF/PERFMON capability and need SYS_ADMIN instead.
+    capabilities:
+      - BPF
+      - PERFMON
+      - SYS_PTRACE
+      - DAC_READ_SEARCH
+      - NET_ADMIN
+      - SYS_RESOURCE
+  # Passive request metrics (docs/eBPF/06): run OpenTelemetry eBPF
+  # Instrumentation as a second container. Needs ebpf.enabled. Off by
+  # default; budget its memory (about 400 MiB in our measurements).
+  obi:
+    enabled: false
+    image:
+      repository: otel/ebpf-instrument
+      # Pin an exact release and upgrade on purpose.
+      tag: "v1.0.0"
+    port: 19400
+    # Ports whose services OBI instruments (OTEL_EBPF_OPEN_PORT).
+    openPorts: "1-65535"
+    # Export spans to the agent for Traces (status-harbor
+    # docs/eBPF/11-traces.md). The agent drops them unless Traces is on
+    # for this Lighthouse in the Console; false saves OBI that work.
+    traces: true
+    # The capabilities OBI documents for application observability.
+    capabilities:
+      - BPF
+      - PERFMON
+      - SYS_PTRACE
+      - DAC_READ_SEARCH
+      - CHECKPOINT_RESTORE
+      - NET_RAW
+    resources:
+      requests:
+        cpu: 50m
+        memory: 300Mi
+      limits:
+        memory: 768Mi
   extraEnv: []
   podLabels: {}
   podAnnotations: {}

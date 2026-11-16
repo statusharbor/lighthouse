@@ -1,0 +1,30 @@
+{{- if and .Values.daemonset.enabled .Values.daemonset.ebpf.enabled }}
+# RBAC for the node pods' eBPF identity cache: list the pods scheduled on
+# the node (field selector spec.nodeName) so a process resolves to its pod
+# name and namespace. Read-only, pods only.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: {{ include "lighthouse.fullname" . }}-ebpf
+  labels:
+    {{- include "lighthouse.labels" . | nindent 4 }}
+rules:
+  - apiGroups: [""]
+    resources: ["pods"]
+    verbs: ["list"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: {{ include "lighthouse.fullname" . }}-ebpf
+  labels:
+    {{- include "lighthouse.labels" . | nindent 4 }}
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: {{ include "lighthouse.fullname" . }}-ebpf
+subjects:
+  - kind: ServiceAccount
+    name: {{ include "lighthouse.serviceAccountName" . }}
+    namespace: {{ .Release.Namespace }}
+{{- end }}

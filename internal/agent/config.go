@@ -101,6 +101,14 @@ type AgentConfig struct {
 	// (accepted by multi-instance but a needless amount of work). See
 	// docs/victoriametrics/lighthause/PLAN.md §2.1 (status-harbor).
 	Role string `yaml:"role"`
+	// EBPF is the local eBPF kill switch: "off" loads no eBPF program,
+	// whatever the Console's remote flags say. "" or "on" leaves the
+	// decision to the remote flags (docs/eBPF/01-foundation.md).
+	EBPF string `yaml:"ebpf"`
+	// OBI configures passive request metrics (docs/eBPF/06): the
+	// OpenTelemetry eBPF Instrumentation binary Lighthouse supervises, or
+	// the metrics URL of an OBI sidecar it only reads (Kubernetes).
+	OBI OBIConfig `yaml:"obi"`
 	// Databases feature (docs/databases/plan.md): configuration is done
 	// in the Console and delivered to the agent via the gate on
 	// /register + /heartbeat - there is NO local database config here.
@@ -179,6 +187,10 @@ const (
 	EnvProcRoot            = "LIGHTHOUSE_PROC_ROOT"            // DaemonSet pods set this to /host/proc
 	EnvHostRoot            = "LIGHTHOUSE_HOST_ROOT"            // DaemonSet pods set this to /host/root when mountHostRoot is on
 	EnvRole                = "LIGHTHOUSE_ROLE"                 // "" / "central" / "host_metrics"
+	EnvEBPF                = "LIGHTHOUSE_EBPF"                 // "off" is the local eBPF kill switch
+	EnvOBIPath             = "LIGHTHOUSE_OBI_PATH"             // OBI binary to supervise
+	EnvOBIMetricsURL       = "LIGHTHOUSE_OBI_METRICS_URL"      // OBI sidecar's Prometheus endpoint
+	EnvOBIPorts            = "LIGHTHOUSE_OBI_PORTS"            // ports OBI instruments, e.g. "80,443,8000-8999"
 )
 
 // LoadFile reads a Config from the given YAML path. A missing file is not
@@ -230,6 +242,18 @@ func Load(r io.Reader) (*Config, error) {
 	if v := os.Getenv(EnvRole); v != "" {
 		cfg.Agent.Role = v
 	}
+	if v := os.Getenv(EnvEBPF); v != "" {
+		cfg.Agent.EBPF = v
+	}
+	if v := os.Getenv(EnvOBIPath); v != "" {
+		cfg.Agent.OBI.Path = v
+	}
+	if v := os.Getenv(EnvOBIMetricsURL); v != "" {
+		cfg.Agent.OBI.MetricsURL = v
+	}
+	if v := os.Getenv(EnvOBIPorts); v != "" {
+		cfg.Agent.OBI.Ports = v
+	}
 	if v := os.Getenv(EnvDiscoveryEnabled); v != "" {
 		cfg.Discovery.Enabled = v == "true" || v == "1"
 	}
@@ -272,5 +296,20 @@ func Load(r io.Reader) (*Config, error) {
 			cfg.Agent.Role, EnvRole, RoleCentral, RoleHostMetrics,
 		)
 	}
+	// Same reasoning as Role: a typo in the kill switch must not leave
+	// eBPF on.
+	switch cfg.Agent.EBPF {
+	case "", "on", "off":
+	default:
+		return nil, fmt.Errorf("config: unknown agent.ebpf %q (set via %s env or agent.ebpf YAML; must be \"on\" or \"off\")", cfg.Agent.EBPF, EnvEBPF)
+	}
 	return &cfg, nil
+}
+
+// OBIConfig is the passive request metrics setup. Both empty: the feature
+// is unavailable on this host.
+type OBIConfig struct {
+	Path       string `yaml:"path"`        // binary to start and restart
+	MetricsURL string `yaml:"metrics_url"` // sidecar endpoint to read instead
+	Ports      string `yaml:"ports"`       // OTEL_EBPF_OPEN_PORT; default all ports
 }

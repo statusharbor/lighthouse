@@ -79,9 +79,14 @@ fi
 # callers, which trips on any sufficiently busy office or NAT'd network
 # (we hit it ourselves). The redirect lives on github.com and doesn't
 # share that budget.
-note "discovering latest release"
+# LIGHTHOUSE_VERSION pins a release (e.g. v1.20.0) instead of the latest:
+# the recommended path for production hosts.
+tag="${LIGHTHOUSE_VERSION:-}"
 latest_url="https://github.com/${REPO}/releases/latest"
-if command -v curl >/dev/null 2>&1; then
+if [ -n "$tag" ]; then
+    note "pinned version requested"
+elif command -v curl >/dev/null 2>&1; then
+    note "discovering latest release"
     tag=$(curl -fsSI -o /dev/null -w '%{redirect_url}' "$latest_url" \
         | sed -n 's|.*/tag/\(.*\)$|\1|p' | tr -d '\r\n')
 else
@@ -93,9 +98,12 @@ fi
 [ -n "$tag" ] || die "could not discover latest release tag from github.com redirect"
 note "version: $tag"
 
+# LIGHTHOUSE_DOWNLOAD_BASE serves the same files from elsewhere (a mirror,
+# or a test build): <base>/<tag>/lighthouse_<os>_<arch> and checksums.txt.
+download_base="${LIGHTHOUSE_DOWNLOAD_BASE:-https://github.com/${REPO}/releases/download}"
 binary_name="lighthouse_${os}_${arch}"
-binary_url="https://github.com/${REPO}/releases/download/${tag}/${binary_name}"
-checksum_url="https://github.com/${REPO}/releases/download/${tag}/checksums.txt"
+binary_url="${download_base}/${tag}/${binary_name}"
+checksum_url="${download_base}/${tag}/checksums.txt"
 
 # --- download + verify -----------------------------------------------------
 tmp_bin=$(mktemp)
@@ -177,6 +185,14 @@ ExecStart=${INSTALL_DIR}/lighthouse -config ${CONFIG_PATH}
 Restart=on-failure
 RestartSec=5
 NoNewPrivileges=true
+# Root, but only these capabilities. eBPF collectors (off unless enabled
+# in the Console, LIGHTHOUSE_EBPF=off forces them off) need BPF and
+# PERFMON, or SYS_ADMIN on kernels before 5.8; SYS_PTRACE resolves
+# other users' executables, SYS_RESOURCE lifts the memlock limit on
+# kernels before 5.11. DAC_READ_SEARCH lets the disk collector statfs
+# mounts under directories root does not own. Older systemd versions
+# skip capability names they do not know.
+CapabilityBoundingSet=CAP_BPF CAP_PERFMON CAP_SYS_ADMIN CAP_SYS_PTRACE CAP_SYS_RESOURCE CAP_DAC_READ_SEARCH CAP_NET_ADMIN
 ProtectSystem=strict
 ProtectHome=true
 ReadWritePaths=${DATA_DIR}

@@ -120,6 +120,8 @@ func (r *Runner) RunHeartbeat(ctx context.Context, interval time.Duration) error
 			// section doesn't re-pull the DSN gate.
 			if resp != nil {
 				r.ApplyDatabaseGate(ctx, resp.Databases, databasesEtag(resp))
+				r.ApplyEBPFGate(resp.EBPF)
+				r.ApplyTracesGate(resp.Traces)
 			}
 		}
 	}
